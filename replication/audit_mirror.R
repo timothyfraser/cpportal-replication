@@ -16,9 +16,14 @@
 #     These are unconditional failures. None exist today.
 #
 #   * NEW `.env` READS — `readRenviron()` anywhere outside the single
-#     grandfathered occurrence pinned below. The pin is exact: file, count, and
-#     enclosing function. If someone adds a second one, or moves the first, the
-#     mirror fails and a human has to look.
+#     grandfathered occurrence pinned below. The pin is exact: file, count,
+#     enclosing function, AND the replication-mode guard that now stands in
+#     front of it (T9b). If someone adds a second one, moves the first, or
+#     strips the guard, the mirror fails and a human has to look.
+#
+#   * LICENSED COLUMNS — `replication/check_no_licensed.R` runs as part of this
+#     gate: no TomTom-derived `traffic_*` column may appear in anything that
+#     describes what the deposit or the fixture CONTAINS.
 #
 # Env var *names* (`Sys.getenv("PGPASSWORD")`, `Sys.getenv("CONNECT_API_KEY")`)
 # are NOT secrets and are not flagged: they leak nothing, and the training code
@@ -57,10 +62,18 @@ paths <- read_allowlist(allowlist_path)
 # vendored Connect train bundle (_bundled/model_functions.R) — a production risk
 # far larger than the zero-byte disclosure it would prevent. So it is pinned
 # here instead: exactly one occurrence, in this file, inside connect_db().
+#
+# T9b (2026-08-28) tightened it one notch further, at Tim's request: the read is
+# now UNREACHABLE in replication mode. `connect_db()` opens with a
+# CPPORTAL_REPLICATION_RUN=1 check that stops before any .env is touched, so the
+# pin below asserts the guard too — `guard_re` must match a line between the
+# `connect_db <- function(` line and the `readRenviron()` line. Deleting the
+# guard while keeping the read fails the mirror.
 ENV_READ_PIN <- list(
-  path  = "job/model/functions.R",
-  count = 1L,
-  fn    = "connect_db"
+  path     = "job/model/functions.R",
+  count    = 1L,
+  fn       = "connect_db",
+  guard_re = "Sys\\.getenv\\(\\s*[\"']CPPORTAL_REPLICATION_RUN"
 )
 
 # --- forbidden literal patterns ----------------------------------------------
@@ -140,9 +153,34 @@ for (p in paths) {
       if (!identical(owner, ENV_READ_PIN$fn)) {
         note(p, env_hits[[1L]], "env_read_moved",
              sprintf("readRenviron() is now inside '%s', pinned to '%s'", owner, ENV_READ_PIN$fn))
+      } else {
+        # The replication-mode guard must stand between the function head and
+        # the read, so CPPORTAL_REPLICATION_RUN=1 can never reach an .env.
+        # Comments are stripped first: a comment that merely NAMES the flag is
+        # not a guard. (Naive `#` stripping; no `#` occurs in a string literal
+        # in this region, and a false FAIL here is the safe direction anyway.)
+        def_line <- if (length(before) == 0L) 1L else max(before)
+        code_before_read <- sub("#.*$", "", lines[seq.int(def_line, env_hits[[1L]])])
+        if (!any(grepl(ENV_READ_PIN$guard_re, code_before_read, perl = TRUE))) {
+          note(p, env_hits[[1L]], "env_read_unguarded",
+               sprintf("readRenviron() in %s() is not preceded by a live %s guard",
+                       ENV_READ_PIN$fn, "CPPORTAL_REPLICATION_RUN"))
+        }
       }
     }
   }
+}
+
+# --- licensed (TomTom) columns -----------------------------------------------
+# Sourced, not shelled out to, so the whole gate stays one base-R process.
+# check_no_licensed.R only self-executes at top level (sys.nframe() == 0).
+licensed_check <- file.path(root, "replication", "check_no_licensed.R")
+if (!file.exists(licensed_check)) {
+  fail[[length(fail) + 1L]] <- sprintf(
+    "  replication/check_no_licensed.R:0  [missing]  the licensed-column gate is gone")
+} else {
+  source(licensed_check, local = TRUE)
+  fail <- c(fail, as.list(check_no_licensed_findings(root)))
 }
 
 if (length(missing) > 0L) {

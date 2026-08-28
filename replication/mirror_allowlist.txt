@@ -32,6 +32,7 @@ replication/pull_dataverse.R
 replication/run_replication.R
 replication/generate_panel_contract.R
 replication/audit_mirror.R
+replication/check_no_licensed.R
 replication/mirror_allowlist.txt
 replication/fixtures/make_fixture.R
 replication/fixtures/panel.csv

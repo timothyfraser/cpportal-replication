@@ -1,12 +1,12 @@
 {
   "generated_by": "cpportal/.github/workflows/mirror-replication.yml",
   "source_repo": "timothyfraser/cpportal",
-  "source_sha": "e52eccb406ac2450cebf28e354e01e50257985bd",
+  "source_sha": "eefbb36ed3fddf2f8846f1095ac84b65fe4520d0",
   "source_ref": "refs/heads/main",
-  "workflow_run": "https://github.com/timothyfraser/cpportal/actions/runs/33194381022",
-  "generated_at_utc": "2026-08-28T17:24:33Z",
+  "workflow_run": "https://github.com/timothyfraser/cpportal/actions/runs/33197171442",
+  "generated_at_utc": "2026-08-28T17:59:41Z",
   "files": [
-    {"path": "job/model/functions.R", "sha256": "8cfb4850471a8eb1ddbd431d30d07a351d33f266440ad34c83ed13adf1304a4d", "bytes": 47185}
+    {"path": "job/model/functions.R", "sha256": "5651e98ea7d3a69805a192c43548c425f13092a7e944df0ce3249054b3da9be0", "bytes": 47824}
     ,
     {"path": "job/model/did/functions_did.R", "sha256": "54b3bf8be703bf06b6404cf6f1b1e397190f86555571d5497a1e9f26ab887bbc", "bytes": 54167}
     ,
@@ -26,13 +26,15 @@
     ,
     {"path": "replication/pull_dataverse.R", "sha256": "5546a192ce29d138d30495c9e0ff7abc2fd131d5fe0c1c37d6aeadd8755521af", "bytes": 6131}
     ,
-    {"path": "replication/run_replication.R", "sha256": "6c1f5099f2fca074f9534810277cd90256e8bb58c7a81bf4de1d118c3e47dd3a", "bytes": 11652}
+    {"path": "replication/run_replication.R", "sha256": "f9016d7398432581430deef075d92262a48daf239d8ec34ab929c1b1fbe60a75", "bytes": 15366}
     ,
     {"path": "replication/generate_panel_contract.R", "sha256": "a8362913d90a52ae2666b264f073b8a75e5decf05039e589f067ba40822406ce", "bytes": 11985}
     ,
-    {"path": "replication/audit_mirror.R", "sha256": "8fc6917cd77379d93cb212d7a26995e29f49d74fb7b9fa75a09778e78a45f0f3", "bytes": 7315}
+    {"path": "replication/audit_mirror.R", "sha256": "ca3c16b331818937a6455d0f2d716168bbdf65cffd0bcce43c3d7e1c74da8eba", "bytes": 9568}
     ,
-    {"path": "replication/mirror_allowlist.txt", "sha256": "0433e0611fec2617d216a587fd3b61b9841db4ea88365d10a15a91e9d31aea14", "bytes": 1659}
+    {"path": "replication/check_no_licensed.R", "sha256": "1bad49eae9f7b5271e9cdb28bad488c235b94f102c4c560c1ce194c9632230a7", "bytes": 6439}
+    ,
+    {"path": "replication/mirror_allowlist.txt", "sha256": "3e16d8f998be7a0eb2b1f8031ae22175c64d9281bb977d1d4431786a471c9694", "bytes": 1691}
     ,
     {"path": "replication/fixtures/make_fixture.R", "sha256": "40a32fa6d68df695c3d50ee12ecd5822e1f73344b58493fccab74afb1ef7674d", "bytes": 7313}
     ,

@@ -37,6 +37,54 @@
 # All three need the private database. Their OUTPUTS are what the deposit ships.
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# 0. REPLICATION MODE — set before anything else is sourced or read
+# -----------------------------------------------------------------------------
+# CPPORTAL_REPLICATION_RUN=1 is the mode switch the mirrored training code
+# reads. Its one effect today is in `connect_db()` (job/model/functions.R):
+# under this flag it reads NO .env file of any kind and stops immediately,
+# because a replication run gets its panel, its treated pairs and its policy
+# rows from the Dataverse snapshot and must never open — or look for the
+# credentials of — the private database. Unset, the same function behaves
+# exactly as it does in production.
+Sys.setenv(CPPORTAL_REPLICATION_RUN = "1")
+
+# Fixed, NON-SENSITIVE estimator settings. Every one of these is a documented
+# production value, pinned here so a replication run is deterministic no matter
+# what the replicator happens to have exported in their shell. None is a
+# credential; none names a host, account or key.
+#
+#   CPPORTAL_FECT_UNTREAT_UNCHARGED=1  uncharged days are UNTREATED in the fit
+#                                      (Tim 2026-08-08). Default ON; pinned so
+#                                      an exported "0" cannot silently change
+#                                      the estimand.
+#   CPPORTAL_FECT_UNCH_DUMMY=1         D_unch (in-window untreated) enters X.
+#                                      Default ON.
+#   CPPORTAL_FECT_EPISODE_EXCLUDE=1    episode exclusion on. Default ON.
+#   CPPORTAL_FECT_AQ_METHOD=cfe        the paper's fect method for AQ outcomes.
+#   CPPORTAL_FECT_AQ_COVARIATES_OVERRIDE=""  no override: use the catalogue in
+#                                      job/model/fect/train/functions.R.
+#   CPPORTAL_FECT_METRO_AS_Z=0         metro dummies NOT added to Z (off in
+#   CPPORTAL_FECT_METRO_YEAR_AS_X=0    production; both are validation knobs).
+#   CPPORTAL_FECT_TOL=0.003            production convergence tolerance
+#                                      (docs/model/TIMING.md).
+#
+# Not set here because they gate steps this runner does not execute (imputation
+# / anchoring / pin publication live in train_fect_bundle(), not here):
+# CPPORTAL_FECT_SAT_ANCHOR, CPPORTAL_FECT_ANCHOR_METHOD, CPPORTAL_FECT_IMPUTE_*,
+# CPPORTAL_FECT_PANEL_SOURCE, CPPORTAL_FECT_PARTITION_MODE, CONNECT_*.
+REPLICATION_ENV <- c(
+  CPPORTAL_FECT_UNTREAT_UNCHARGED       = "1",
+  CPPORTAL_FECT_UNCH_DUMMY              = "1",
+  CPPORTAL_FECT_EPISODE_EXCLUDE         = "1",
+  CPPORTAL_FECT_AQ_METHOD               = "cfe",
+  CPPORTAL_FECT_AQ_COVARIATES_OVERRIDE  = "",
+  CPPORTAL_FECT_METRO_AS_Z              = "0",
+  CPPORTAL_FECT_METRO_YEAR_AS_X         = "0",
+  CPPORTAL_FECT_TOL                     = "0.003"
+)
+do.call(Sys.setenv, as.list(REPLICATION_ENV))
+
 args <- commandArgs(trailingOnly = TRUE)
 opt <- function(flag, default = NULL) {
   i <- match(flag, args)
@@ -76,6 +124,22 @@ for (f in MIRRORED) {
   suppressWarnings(source(f))
 }
 say("sourced ", length(MIRRORED), " mirrored training file(s)")
+
+# --- assert the run is credential-free ---------------------------------------
+# Not a comment, an assertion: call connect_db() and require that it refuses.
+# If this ever returns a handle (or a NULL from a missing PGHOST rather than the
+# replication stop), the guard has regressed and the run must not continue.
+.probe <- tryCatch({ connect_db(); "returned" },
+                   error = function(e) conditionMessage(e))
+if (!grepl("no database connection is used or permitted", .probe, fixed = TRUE)) {
+  stop("replication guard missing: connect_db() did not refuse under ",
+       "CPPORTAL_REPLICATION_RUN=1 (got: ", .probe, "). Refusing to run.",
+       call. = FALSE)
+}
+rm(.probe)
+say("replication mode: connect_db() refuses; no .env is read and no database ",
+    "connection is opened", if (file.exists("job/.env"))
+      " (a job/.env exists here and is deliberately ignored)" else "")
 
 if (!requireNamespace("fect", quietly = TRUE)) {
   stop("package 'fect' is required. Install it with:\n",

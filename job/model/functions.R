@@ -248,6 +248,16 @@ get_model_ready_monitors <- function(conn, pollutant, date_from, date_to,
 #' Loads .env from job/ if present (when run from repo root).
 #' @return DBI connection or NULL on failure
 connect_db <- function() {
+  # REPLICATION MODE (CPPORTAL_REPLICATION_RUN=1): no .env of any kind is read
+  # and no connection is opened. A replication run gets its panel, its treated
+  # pairs and its policy rows from the Dataverse snapshot, so a database handle
+  # is neither needed nor permitted. Unset/any other value => production, i.e.
+  # exactly the behavior below. See replication/run_replication.R.
+  if (identical(Sys.getenv("CPPORTAL_REPLICATION_RUN"), "1")) {
+    stop("connect_db(): replication runs read the Dataverse snapshot; ",
+         "no database connection is used or permitted ",
+         "(CPPORTAL_REPLICATION_RUN=1).", call. = FALSE)
+  }
   env_path <- "job/.env"
   if (basename(getwd()) == "model") env_path <- "../.env"
   if (file.exists(env_path)) readRenviron(env_path)
