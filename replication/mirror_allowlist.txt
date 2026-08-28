@@ -1,0 +1,39 @@
+# mirror_allowlist.txt — THE machine-readable mirror contract.
+#
+# Every consumer reads THIS file, never its own hand-copied list:
+#   * .github/workflows/mirror-replication.yml  (what to copy + hash)
+#   * replication/audit_mirror.R                (what to scan for secrets)
+#   * docs/REPLICATION_MIRROR.md                (the prose explanation)
+#
+# One path per line, repo-root-relative, POSIX separators. Paths are preserved
+# verbatim in the public repo (timothyfraser/cpportal-replication) so the
+# relative source() fallbacks already baked into the training code keep
+# resolving from the public repo root — e.g. train/functions.R's gap-shape
+# loader tries "job/model/fect/train/gap_shape.R", which is exactly where the
+# mirror puts it.
+#
+# Blank lines and #-comments are ignored. Do NOT add a path without running
+#   Rscript replication/audit_mirror.R
+# and recording the verdict in docs/REPLICATION_MIRROR.md.
+
+# --- the real training code path (verbatim; never a publication edit) --------
+job/model/functions.R
+job/model/did/functions_did.R
+job/model/fect/functions_fect.R
+job/model/fect/train/functions.R
+job/model/fect/train/episode_lib.R
+job/model/fect/train/gap_shape.R
+
+# --- replication-only files (single source of truth lives here too) ---------
+replication/README.md
+replication/panel_contract.md
+replication/DATAVERSE_DEPOSIT.md
+replication/pull_dataverse.R
+replication/run_replication.R
+replication/generate_panel_contract.R
+replication/audit_mirror.R
+replication/mirror_allowlist.txt
+replication/fixtures/make_fixture.R
+replication/fixtures/panel.csv
+replication/fixtures/zone_pairs.csv
+replication/fixtures/policy_schedules.csv

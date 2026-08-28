@@ -1,0 +1,45 @@
+{
+  "generated_by": "cpportal/.github/workflows/mirror-replication.yml",
+  "source_repo": "timothyfraser/cpportal",
+  "source_sha": "e52eccb406ac2450cebf28e354e01e50257985bd",
+  "source_ref": "refs/heads/main",
+  "workflow_run": "https://github.com/timothyfraser/cpportal/actions/runs/33194381022",
+  "generated_at_utc": "2026-08-28T17:24:33Z",
+  "files": [
+    {"path": "job/model/functions.R", "sha256": "8cfb4850471a8eb1ddbd431d30d07a351d33f266440ad34c83ed13adf1304a4d", "bytes": 47185}
+    ,
+    {"path": "job/model/did/functions_did.R", "sha256": "54b3bf8be703bf06b6404cf6f1b1e397190f86555571d5497a1e9f26ab887bbc", "bytes": 54167}
+    ,
+    {"path": "job/model/fect/functions_fect.R", "sha256": "bf7263ee51c7586d3e8289c9356f6d1afdc7d50d60517e3305f7a02a30a1bb8e", "bytes": 61934}
+    ,
+    {"path": "job/model/fect/train/functions.R", "sha256": "fd33f8ee7b97a7f147fc9b4f2f3be4f41b24c4d901fc020fa3868dc4a6234915", "bytes": 386903}
+    ,
+    {"path": "job/model/fect/train/episode_lib.R", "sha256": "749beb9f652338dae12e597dbba526fbf8148e41253da8c1c5da913ec1eba71b", "bytes": 12385}
+    ,
+    {"path": "job/model/fect/train/gap_shape.R", "sha256": "a99777ae2a5ef2be3cc3fbc47f6d4c301c581271851904c5b2235f79826c0f53", "bytes": 105771}
+    ,
+    {"path": "replication/README.md", "sha256": "ff591993c0bc5663258367f540706654ac40f065f78163880f4644eb4109edb3", "bytes": 6579}
+    ,
+    {"path": "replication/panel_contract.md", "sha256": "9081c6048708e315903dae135c065e4ca2898b99457b3b749922eb80f8fb566e", "bytes": 6280}
+    ,
+    {"path": "replication/DATAVERSE_DEPOSIT.md", "sha256": "6f9d5fdbfd384c0002f8a0fe3b36a2f351916108f64ebe916722d6f00197df6b", "bytes": 4796}
+    ,
+    {"path": "replication/pull_dataverse.R", "sha256": "5546a192ce29d138d30495c9e0ff7abc2fd131d5fe0c1c37d6aeadd8755521af", "bytes": 6131}
+    ,
+    {"path": "replication/run_replication.R", "sha256": "6c1f5099f2fca074f9534810277cd90256e8bb58c7a81bf4de1d118c3e47dd3a", "bytes": 11652}
+    ,
+    {"path": "replication/generate_panel_contract.R", "sha256": "a8362913d90a52ae2666b264f073b8a75e5decf05039e589f067ba40822406ce", "bytes": 11985}
+    ,
+    {"path": "replication/audit_mirror.R", "sha256": "8fc6917cd77379d93cb212d7a26995e29f49d74fb7b9fa75a09778e78a45f0f3", "bytes": 7315}
+    ,
+    {"path": "replication/mirror_allowlist.txt", "sha256": "0433e0611fec2617d216a587fd3b61b9841db4ea88365d10a15a91e9d31aea14", "bytes": 1659}
+    ,
+    {"path": "replication/fixtures/make_fixture.R", "sha256": "40a32fa6d68df695c3d50ee12ecd5822e1f73344b58493fccab74afb1ef7674d", "bytes": 7313}
+    ,
+    {"path": "replication/fixtures/panel.csv", "sha256": "efdcbc10ed1dda0d1bd67bbc2329daab5b057b0afaae2ae44b4a1d274b946f6f", "bytes": 46332}
+    ,
+    {"path": "replication/fixtures/zone_pairs.csv", "sha256": "66d11ca76f647bc1329ab19aca51a4a2d15513334c80cfa08bd190c1147515d7", "bytes": 331}
+    ,
+    {"path": "replication/fixtures/policy_schedules.csv", "sha256": "54fcb5dca9d5bddd2cba31fe67f135e8e9640be6d06792099d0abe7d7f09e45e", "bytes": 118}
+  ]
+}
