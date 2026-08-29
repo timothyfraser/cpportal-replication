@@ -1,10 +1,10 @@
 {
   "generated_by": "cpportal/.github/workflows/mirror-replication.yml",
   "source_repo": "timothyfraser/cpportal",
-  "source_sha": "eefbb36ed3fddf2f8846f1095ac84b65fe4520d0",
+  "source_sha": "527b7cfb53971a2769ad2e7bd537f68a802fa8ff",
   "source_ref": "refs/heads/main",
-  "workflow_run": "https://github.com/timothyfraser/cpportal/actions/runs/33197171442",
-  "generated_at_utc": "2026-08-28T17:59:41Z",
+  "workflow_run": "https://github.com/timothyfraser/cpportal/actions/runs/33225730872",
+  "generated_at_utc": "2026-08-29T01:12:35Z",
   "files": [
     {"path": "job/model/functions.R", "sha256": "5651e98ea7d3a69805a192c43548c425f13092a7e944df0ce3249054b3da9be0", "bytes": 47824}
     ,
@@ -18,23 +18,25 @@
     ,
     {"path": "job/model/fect/train/gap_shape.R", "sha256": "a99777ae2a5ef2be3cc3fbc47f6d4c301c581271851904c5b2235f79826c0f53", "bytes": 105771}
     ,
-    {"path": "replication/README.md", "sha256": "ff591993c0bc5663258367f540706654ac40f065f78163880f4644eb4109edb3", "bytes": 6579}
+    {"path": "app/v2/api/R/cross_city_att.R", "sha256": "3e45acaa1868e4daa59c12c772978e5db063624722cc39e62c80428e095e4022", "bytes": 123185}
+    ,
+    {"path": "replication/README.md", "sha256": "0b0967ccf6c422c1e8e8ca19dd0fde8f87544b7ba5591d25fd406e30bdf1611e", "bytes": 11768}
     ,
     {"path": "replication/panel_contract.md", "sha256": "9081c6048708e315903dae135c065e4ca2898b99457b3b749922eb80f8fb566e", "bytes": 6280}
     ,
-    {"path": "replication/DATAVERSE_DEPOSIT.md", "sha256": "6f9d5fdbfd384c0002f8a0fe3b36a2f351916108f64ebe916722d6f00197df6b", "bytes": 4796}
+    {"path": "replication/DATAVERSE_DEPOSIT.md", "sha256": "8d14a24deb06b6f8701e6f9c64fbfaee841eaace1751d29c9b69663d1540471f", "bytes": 7960}
     ,
     {"path": "replication/pull_dataverse.R", "sha256": "5546a192ce29d138d30495c9e0ff7abc2fd131d5fe0c1c37d6aeadd8755521af", "bytes": 6131}
     ,
-    {"path": "replication/run_replication.R", "sha256": "f9016d7398432581430deef075d92262a48daf239d8ec34ab929c1b1fbe60a75", "bytes": 15366}
+    {"path": "replication/run_replication.R", "sha256": "47abbf5dcd418db899164d69b98a7c39fa3a06baf94e1315a10f48668a649ba4", "bytes": 35022}
     ,
     {"path": "replication/generate_panel_contract.R", "sha256": "a8362913d90a52ae2666b264f073b8a75e5decf05039e589f067ba40822406ce", "bytes": 11985}
     ,
     {"path": "replication/audit_mirror.R", "sha256": "ca3c16b331818937a6455d0f2d716168bbdf65cffd0bcce43c3d7e1c74da8eba", "bytes": 9568}
     ,
-    {"path": "replication/check_no_licensed.R", "sha256": "1bad49eae9f7b5271e9cdb28bad488c235b94f102c4c560c1ce194c9632230a7", "bytes": 6439}
+    {"path": "replication/check_no_licensed.R", "sha256": "13cd7f70b13f5f7fa062de4eef84be180ba0c2b0fb57b699be538b186549618e", "bytes": 10165}
     ,
-    {"path": "replication/mirror_allowlist.txt", "sha256": "3e16d8f998be7a0eb2b1f8031ae22175c64d9281bb977d1d4431786a471c9694", "bytes": 1691}
+    {"path": "replication/mirror_allowlist.txt", "sha256": "c92f48544bb34ac20b9f4771b89cd002f4e3c22ba92185d931c5a1c2efc3f385", "bytes": 3464}
     ,
     {"path": "replication/fixtures/make_fixture.R", "sha256": "40a32fa6d68df695c3d50ee12ecd5822e1f73344b58493fccab74afb1ef7674d", "bytes": 7313}
     ,
@@ -43,5 +45,15 @@
     {"path": "replication/fixtures/zone_pairs.csv", "sha256": "66d11ca76f647bc1329ab19aca51a4a2d15513334c80cfa08bd190c1147515d7", "bytes": 331}
     ,
     {"path": "replication/fixtures/policy_schedules.csv", "sha256": "54fcb5dca9d5bddd2cba31fe67f135e8e9640be6d06792099d0abe7d7f09e45e", "bytes": 118}
+    ,
+    {"path": "replication/no_pin_guard.R", "sha256": "4d9f519b207cd787bb53719508e2904b2974eba45ad1f991a6ebeed0372903e0", "bytes": 5491}
+    ,
+    {"path": "replication/reproduce_paper.R", "sha256": "1de51a7067ac570f08226ebda3384e4df5074a171a131859bc63af99e4ed0669", "bytes": 24536}
+    ,
+    {"path": "replication/make_paper_values.R", "sha256": "0df74a2fad24b703cb58d8e13385268a7e902e4683bc086e8f3c003890b0b444", "bytes": 5039}
+    ,
+    {"path": "replication/paper_values.json", "sha256": "32d2eff3ad8fd6bdb27fb50fec7ef6215317fa85619cd3082e7071126bb0d881", "bytes": 793526}
+    ,
+    {"path": "replication/launch_real_run.sh", "sha256": "d9d1716ea30e38c36ac9075d4b56142e1c4fac75382bf46db73830cf059095fb", "bytes": 3173}
   ]
 }

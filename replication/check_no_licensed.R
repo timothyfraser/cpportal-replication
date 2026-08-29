@@ -123,19 +123,112 @@ check_no_licensed_findings <- function(root = ".", extra = character(0)) {
 }
 
 # --- script mode --------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# THE COLUMN PREDICATE (library surface)
+# -----------------------------------------------------------------------------
+# The scan above answers "does a committed FILE mention a licensed column?".
+# The predicate below answers "is this COLUMN SET licensed?", which is what
+# `make_extract.R` needs while it is building the deposit and what
+# `run_replication.R` needs while it is reading one back. Same rule, two call
+# shapes; keeping them in one file is what stops the two from drifting.
+#
+# The rule is enforced by PREFIX, not by the five known TomTom names, so a new
+# `traffic_*` aggregate is licensed by default rather than licensed once
+# somebody remembers to list it. This mirrors the wire-level
+# `no_licensed_columns` gate the public API gateway runs (see
+# `infra/public-api-gateway/README.md`), so the deposit and the API answer to
+# the same predicate.
+
+LICENSED_PREFIXES <- c("traffic_")
+
+#' Which of `cols` are licensed?
+licensed_cols <- function(cols) {
+  cols <- as.character(cols)
+  hit <- rep(FALSE, length(cols))
+  for (p in LICENSED_PREFIXES) hit <- hit | startsWith(cols, p)
+  cols[hit]
+}
+
+#' Abort if any licensed column is present.
+assert_no_licensed <- function(cols, what = "the column set") {
+  bad <- licensed_cols(cols)
+  if (length(bad) > 0L) {
+    stop("LICENSED DATA in ", what, ": ", paste(bad, collapse = ", "),
+         "\nThese columns are licensed from TomTom and must never be deposited ",
+         "or mirrored. Fix the SELECT allowlist; do not add an exception here.",
+         call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+#' Read the header row of a csv / csv.gz without reading the body.
+read_header <- function(path) {
+  con <- if (grepl("\\.gz$", path)) gzfile(path, "rt") else file(path, "rt")
+  on.exit(close(con), add = TRUE)
+  line <- readLines(con, n = 1L, warn = FALSE)
+  if (!length(line)) return(character(0))
+  trimws(gsub('^"|"$', "", strsplit(line, ",", fixed = TRUE)[[1]]))
+}
+
+#' Header-scan findings for csv/csv.gz paths (and every csv in a directory).
+#' Returns the same "  path:line  [id]  text" shape as the repo scan.
+check_no_licensed_headers <- function(targets) {
+  out <- character(0)
+  paths <- unlist(lapply(targets, function(t) {
+    if (dir.exists(t)) {
+      list.files(t, pattern = "\\.csv(\\.gz)?$", full.names = TRUE)
+    } else t
+  }))
+  for (p in paths) {
+    if (!file.exists(p)) {
+      out <- c(out, sprintf("  %s:0  [missing]  expected csv not found", p))
+      next
+    }
+    bad <- licensed_cols(read_header(p))
+    for (b in bad) {
+      out <- c(out, sprintf("  %s:1  [licensed_column]  header column: %s", p, b))
+    }
+  }
+  out
+}
+
+# --- script mode --------------------------------------------------------------
 # sys.nframe() == 0 only when this file is executed at top level by Rscript;
-# `source()` from audit_mirror.R pushes a frame, so the gate stays silent there.
+# `source()` from audit_mirror.R / make_extract.R pushes a frame, so the gate
+# stays silent there and only the definitions above are installed.
+#
+# Two argument shapes, distinguished by what the arguments ARE:
+#   Rscript replication/check_no_licensed.R [root] [extra.md ...]
+#       repo scan — the mirror gate audit_mirror.R runs.
+#   Rscript replication/check_no_licensed.R <dir-or-csv> [...]
+#       header scan — what you point at a produced extract.
+# A directory that is not a repo root, or any *.csv / *.csv.gz argument, selects
+# the header scan; anything else is treated as root + extra markdown.
 if (sys.nframe() == 0L) {
   .args <- commandArgs(trailingOnly = TRUE)
-  .root <- if (length(.args) >= 1L) .args[[1L]] else "."
-  .extra <- if (length(.args) > 1L) .args[-1L] else character(0)
-  .f <- check_no_licensed_findings(.root, .extra)
+  .is_csv <- grepl("\\.csv(\\.gz)?$", .args)
+  .is_extract_dir <- vapply(.args, function(a) {
+    dir.exists(a) && !file.exists(file.path(a, "replication", "panel_contract.md"))
+  }, logical(1))
+  .hdr_targets <- .args[.is_csv | .is_extract_dir]
+  .rest <- .args[!(.is_csv | .is_extract_dir)]
+
+  .f <- character(0)
+  if (length(.hdr_targets)) {
+    .f <- c(.f, check_no_licensed_headers(.hdr_targets))
+  }
+  if (length(.hdr_targets) == 0L || length(.rest) > 0L) {
+    .root <- if (length(.rest) >= 1L) .rest[[1L]] else "."
+    .extra <- if (length(.rest) > 1L) .rest[-1L] else character(0)
+    .f <- c(.f, check_no_licensed_findings(.root, .extra))
+  }
+
   if (length(.f) > 0L) {
     cat("check_no_licensed: FAIL — ", length(.f),
         " licensed-column finding(s):\n", sep = "")
     cat(paste(.f, collapse = "\n"), "\n", sep = "")
     quit(save = "no", status = 1L)
   }
-  cat("check_no_licensed: OK — no TomTom-licensed `traffic_*` column in the",
-      " deposit spec, the column contract, or the fixture header.\n", sep = "")
+  cat("check_no_licensed: OK — no TomTom-licensed `traffic_*` column found.\n",
+      sep = "")
 }

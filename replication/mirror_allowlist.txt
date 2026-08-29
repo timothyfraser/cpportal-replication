@@ -24,6 +24,19 @@ job/model/fect/train/functions.R
 job/model/fect/train/episode_lib.R
 job/model/fect/train/gap_shape.R
 
+# --- the SERVING math the paper's tables are pooled with --------------------
+# Added T9c (2026-08-28). results/table1_grid.R :: .t1_cells() applies
+# `cpportal_charged_days_filter()` and `cpportal_episode_days_filter()` to every
+# Table 1 cell before pooling, and both live here. Without this file a
+# replicator can reproduce the FIT but not the published TABLE, and the only
+# alternative — copying the date-aware weekday map into replication/ — is a
+# second implementation of the estimand, which is exactly how the portal and the
+# paper drift apart. Audited: pure R, no credentials, no `source()` of any other
+# app file. It does reference `DBI::dbGetQuery` inside three geometry helpers
+# that a replication never calls; those need a live handle passed IN, so
+# sourcing the file opens nothing.
+app/v2/api/R/cross_city_att.R
+
 # --- replication-only files (single source of truth lives here too) ---------
 replication/README.md
 replication/panel_contract.md
@@ -38,3 +51,20 @@ replication/fixtures/make_fixture.R
 replication/fixtures/panel.csv
 replication/fixtures/zone_pairs.csv
 replication/fixtures/policy_schedules.csv
+replication/no_pin_guard.R
+replication/reproduce_paper.R
+replication/make_paper_values.R
+replication/paper_values.json
+replication/launch_real_run.sh
+
+# --- DELIBERATELY NOT MIRRORED ----------------------------------------------
+# replication/make_extract.R
+#   PRODUCTION-mode. It is the one file in replication/ that reads `job/.env`
+#   for PG* credentials and issues SQL against the private Postgres/PostGIS
+#   instance. A replicator cannot run it (no database) and does not need to
+#   (its OUTPUT is the Dataverse deposit). Mirroring it would put a private
+#   credential path and the private schema's SELECT lists in the public repo
+#   for no reproducibility gain — the same reasoning that excludes
+#   job/model/fect/train/panel_cache_io.R (docs/REPLICATION_MIRROR.md).
+#   What it does IS public: replication/panel_contract.md documents every
+#   column, filter and table it reads, and is itself generated from the code.

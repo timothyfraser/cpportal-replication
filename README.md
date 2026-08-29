@@ -42,10 +42,56 @@ Rscript replication/run_replication.R --dry-run
 # 3. the real thing, once the deposit is published
 export DATAVERSE_API_KEY=...            # Harvard Dataverse -> Account -> API Token
 Rscript replication/pull_dataverse.R --doi doi:10.7910/DVN/XXXXXX
-Rscript replication/run_replication.R
+
+# 4. fit (hours-scale; see "Runtime" below) and compare against the paper
+Rscript replication/run_replication.R --extract replication/data --out out
+Rscript replication/reproduce_paper.R  --run out --out REPRODUCTION_REPORT.md
 ```
 
 Run everything from the repository root.
+
+### Runtime and resources
+
+Measured on the reference run, 2026-08-28, Windows 11, 8 cores
+(`run_meta_aq_daily_mean.json` in that run's output directory):
+
+| stage | wall time | notes |
+|---|---|---|
+| build the deposit (private only) | ~2 min | `make_extract.R`; not runnable outside the private repo |
+| `fect` fit, `aq_daily_mean` | **19.9 min** | 816,134 monitor-days, 462 monitors, 20 metros, `tol = 0.003` |
+| QoI aggregates + episode postprocess | ~1.5 min | `overall`, `per_metro`, `per_metro_month`, `per_day_metro_unit` |
+| `reproduce_paper.R` | < 1 min | reads the written CSVs, no refit |
+
+`aq_daily_max` fitted in **8.6 min** on the same machine — the daily-max panel
+is smaller. Peak memory stays in the low single-digit GB on the analytic path.
+There is **no bootstrap**: production computes standard errors analytically
+(`vartype = "analytic"`, `twoway_resid`), and so does this runner.
+
+### The three failed runs, and why they are documented here
+
+Runs 1-3 of the reference fit died — twice on memory, once on
+`std::out_of_range: Mat::elem()`. None of them was a hardware problem. The
+runner had been written from `get_fect()`'s **signature defaults and its
+docstring** instead of from the **trainer's call site**
+(`job/model/fect/train/functions.R:3426-3442`), and the two disagree on exactly
+the arguments that matter:
+
+| argument | `get_fect()` default | what the trainer passes |
+|---|---|---|
+| `vartype` | `"bootstrap"` | `"analytic"` |
+| `use_metro_index` | `TRUE` | `FALSE` |
+
+With `vartype = "bootstrap"` the fit entered a branch **production never runs**,
+serialising a multi-GB closure to parallel workers. With `use_metro_index = TRUE`
+it attempted a fit that the trainer's own comments record as "silently failing
+on every spec we inspected", paid its full cost, and only then fell back.
+
+The lesson is general enough to be worth stating in a public README: **when
+mirroring a call, mirror the CALL SITE, not the callee's documentation.** A
+wrapper's defaults describe what it does when nobody configures it; production
+configures it. `replication/reproduce_paper.R` and the fit block in
+`run_replication.R` both carry the argument-by-argument audit table against that
+call site, and the failed runs' logs are kept beside the successful one.
 
 ### The dry run
 
@@ -101,13 +147,49 @@ effects, and the per-metro fitted-basis ATTs.
   *output*, which is the artefact worth checking anyway.
 - **Licensed traffic columns.** The TomTom-derived `traffic_*` outcomes are not
   redistributable and are absent from the deposit.
-- **The serving layer.** The published tables apply a serving-side charged-days
-  pooling cut and, for metros `fect` cannot fit, the anchored (M10) satellite
-  path. Both live in the portal's API, not in the training code, so the runner's
-  output is the **fitted-basis** ATT — comparable to, but not identical to, the
-  published pooled row for anchored cities.
-- **Exact bootstrap replication.** Standard errors come from a bootstrap; the
-  point estimates reproduce, the SE digits will not match bit-for-bit.
+- **The anchored (M10) path.** For metros `fect` cannot fit, the published
+  number comes from the satellite-anchored estimator in the portal's API. At
+  zone scope that is **Oslo (956) alone**. A fitted-only run has no fitted row
+  for it — a design boundary, not a missing number.
+- **Bit-identical point estimates.** The published values read a *pinned* fit;
+  this runner *refits*. Same code, same data, same window, but a different
+  realisation of an EM fit stopped at `tol = 0.003`. On the reference run every
+  city ATT landed within 0.04-0.24 ug/m3 of the paper, all in the same
+  direction, while the pooled cell sets matched **exactly**. See
+  `REPRODUCTION_REPORT.md`.
+
+The serving-side **charged-days and episode pooling cuts are no longer on this
+list**: `app/v2/api/R/cross_city_att.R` is mirrored, and
+`replication/reproduce_paper.R` calls its filters directly rather than copying
+the weekday map.
+
+## Paper artifact -> script -> output
+
+Every published table, figure and quantity of interest, with the script that
+regenerates it and the file it lands in. A **NOT YET** line is a real gap with
+its reason — there are no silent omissions.
+
+| paper artifact | script | output | status |
+|---|---|---|---|
+| Table 1 — per-city / per-era ATT, CI, pct | `run_replication.R` -> `reproduce_paper.R` | `REPRODUCTION_REPORT.md`, `parity_<outcome>.csv` | **reproduced** (cell sets exact; see the report for the point-estimate offset) |
+| Table 1 — London CCZ / ULEZ era rows | same | same | **reproduced** — the era windows travel in `paper_values.json` |
+| Table 1 — pooled `equal_weight`, `monitor_day` | `reproduce_paper.R` | same | **reproduced** |
+| Table 2 — per-city + per-era, pooled rows | `reproduce_paper.R` | `parity_<outcome>.csv` (group `t2`) | **reproduced** where the row is a fitted metro; anchored rows out of scope |
+| Table 4 — year-horizon Y1..Yk pooled | — | — | **NOT YET.** Needs `metro_window_estimate()`'s per-metro treatment-start dates; the deposit does not expose them in that shape. The pooling function itself is mirrored. |
+| Table A7 — daily mean / median / max per city | `run_replication.R --outcome aq_daily_{mean,med,max}` | one output dir per outcome | **mean reproduced**; `med` and `max` need their own extract (see below) and were still fitting when this README was written |
+| Figure `fig_att_by_year` inputs | — | — | **NOT YET.** Same dependency as Table 4. |
+| Oslo (956), any table | — | — | **NOT applicable.** Anchored (M10); no fitted row exists. |
+| `traffic_*` outcomes, any table | — | — | **NOT redistributable.** TomTom-licensed; excluded from the deposit by `check_no_licensed.R`. |
+
+Two mechanics worth knowing before you run the A7 row:
+
+* **The deposit is single-outcome.** `make_extract.R` writes only the spec's own
+  outcome column, so `aq_daily_med` and `aq_daily_max` each need their own
+  extract directory and their own fit. They do not share the mean's panel.
+* **Episode scoring reads `aq_daily_mean`.** In production every outcome's
+  episode flags are scored on the daily-mean series. A single-outcome `med`/`max`
+  deposit cannot supply it, so the episode postprocess degrades. This is
+  reported by the runner, not swallowed.
 
 ## Citation
 
