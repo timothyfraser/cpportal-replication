@@ -320,6 +320,19 @@ fect_episode_postprocess_att = function(att, panel,
   att_rest = att[keep, , drop = FALSE]
 
   if (exists("build_anchored_per_metro", mode = "function")) {
+    # ORDER MATTERS. Drop the stale anchored per_metro rows BEFORE snapshotting
+    # `att_for_anch`, never after. `build_anchored_per_metro()` skips any metro
+    # that already carries a fitted per_metro row; if the anchored per_metro
+    # rows it produced on the previous pass are still in the frame it is handed,
+    # every anchored metro looks "already covered", its per_day_metro_imputed
+    # rows are filtered out, and the rebuild returns NULL — after we have
+    # already deleted the rows it was supposed to replace. That is exactly the
+    # PR #421 regression: anchored per_metro rows deleted and never rebuilt.
+    if ("basis" %in% names(att_rest)) {
+      att_rest = att_rest[!(att_rest$type %in% "per_metro" &
+                              !is.na(att_rest$basis) &
+                              att_rest$basis == "anchored"), , drop = FALSE]
+    }
     att_for_anch = att_rest
     if ("episode_flag" %in% names(att_for_anch)) {
       drop_ep = att_for_anch$type %in% "per_day_metro_imputed" &
@@ -333,9 +346,6 @@ fect_episode_postprocess_att = function(att, panel,
       imp = fect_charged_days_only_filter(imp, date_col = "day")
       att_for_anch = dplyr::bind_rows(other, imp)
     }
-    att_rest = att_rest[!(att_rest$type %in% "per_metro" &
-                            !is.na(att_rest$basis) &
-                            att_rest$basis == "anchored"), , drop = FALSE]
     anchored_pm = tryCatch(
       build_anchored_per_metro(att_for_anch),
       error = function(e) {

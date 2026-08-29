@@ -2943,7 +2943,22 @@ build_anchored_per_metro = function(att) {
   if (is.null(att) || !("type" %in% names(att))) return(NULL)
   imp = att[att$type %in% "per_day_metro_imputed", , drop = FALSE]
   if (nrow(imp) == 0L) return(NULL)
-  fitted_metros = unique(att$metro_id[att$type %in% "per_metro"])
+  # The gate is "does this metro already have a FECT-FITTED per_metro row?".
+  # It must therefore look at `basis`, not at `type` alone. On the FIRST call
+  # (functions.R, right after the M10 promotion) `att` holds only fect-fitted
+  # per_metro rows, so an unfiltered `type == "per_metro"` was harmless. On the
+  # SECOND call — the episode rebuild in episode_lib.R, added by PR #421 — the
+  # frame can still carry this function's OWN previous output
+  # (type="per_metro", basis="anchored"). Reading those as "fitted" made every
+  # anchored metro self-veto: its per_day_metro_imputed rows were filtered out
+  # here, the rebuild returned NULL, and the anchored per_metro rows the caller
+  # had just deleted were never restored. Restrict to genuinely fitted rows.
+  fitted_metros = if ("basis" %in% names(att)) {
+    unique(att$metro_id[att$type %in% "per_metro" &
+                          (is.na(att$basis) | att$basis %in% "fitted")])
+  } else {
+    unique(att$metro_id[att$type %in% "per_metro"])
+  }
   imp = imp |> dplyr::filter(!(.data$metro_id %in% fitted_metros))
   if (nrow(imp) == 0L) return(NULL)
   imp |>
