@@ -1,0 +1,77 @@
+{
+  "generated_by": "cpportal-replication/replication/pull_api.R",
+  "api_timestamp": "2026-09-13T06:12:32Z",
+  "trained_at": "2026-09-13T06:12:32Z",
+  "created_at_utc": "2026-09-14T01:03:50Z",
+  "n_rows": 129618,
+  "n_metros": 20,
+  "files": [
+    {
+      "path": "panel.csv",
+      "sha256": "1026229768cf06e85dcdd0d31f7b62875525258518de271d034f38121efce1fd",
+      "bytes": 13799346
+    },
+    {
+      "path": "panel.csv.gz",
+      "sha256": "a2b921c8a96408b3276520950ca7cf35f92fcdf36e47ae9f11ae45f406f0fb0f",
+      "bytes": 2834008
+    },
+    {
+      "path": "panel.zip",
+      "sha256": "7fd637807069bab300d669ed7953edf70304d63bd9ef7acd050ef93feb897b00",
+      "bytes": 2854257
+    },
+    {
+      "path": "zone_pairs.csv",
+      "sha256": "fe02aa51272839ce14e82917beeb11c9e23a29cfaf6ec48e0865ff8c2cc49aac",
+      "bytes": 22524
+    },
+    {
+      "path": "zone_pairs.csv.gz",
+      "sha256": "7f3d82fb739b0c808c65bf66efff8f4a0f63a3066e53415a41260923d0dd5649",
+      "bytes": 2278
+    },
+    {
+      "path": "policy_schedules.csv",
+      "sha256": "5f5e1f4c606b3de0eed65d0c9f572994c06f0c904b28af1d5958f0c70f956860",
+      "bytes": 596
+    },
+    {
+      "path": "policy_schedules.csv.gz",
+      "sha256": "0c8f20cf3dde5be13409809ebb3e2227a51079796913b7c928576abe9b2bd7ae",
+      "bytes": 300
+    },
+    {
+      "path": "metro_roster.csv",
+      "sha256": "91d58b0254d649e7f286081334e63db59987585537635a53492508e2be944b57",
+      "bytes": 385
+    },
+    {
+      "path": "metro_roster.csv.gz",
+      "sha256": "52560fef353789eb81587de234ab6b1dc8e4a3f313ade93376eac1809eccdf08",
+      "bytes": 302
+    }
+  ],
+  "metro_tallies": {
+    "1": 21843,
+    "32": 11201,
+    "33": 2294,
+    "38": 5379,
+    "121": 3595,
+    "194": 3059,
+    "334": 529,
+    "943": 24250,
+    "944": 11090,
+    "945": 7457,
+    "946": 13035,
+    "948": 3770,
+    "949": 3194,
+    "950": 2712,
+    "951": 1576,
+    "952": 276,
+    "955": 1015,
+    "956": 8447,
+    "957": 1837,
+    "958": 3059
+  }
+}

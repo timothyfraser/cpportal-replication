@@ -57,9 +57,20 @@ validate_dir <- function(dir) {
   for (e in EXPECTED) {
     p <- file.path(dir, e$name)
     if (!file.exists(p)) {
-      say("MISSING  ", p); ok <- FALSE; next
+      if (file.exists(paste0(p, ".gz"))) {
+        p <- paste0(p, ".gz")
+      } else if (file.exists(sub("\\.csv$", ".zip", p))) {
+        p <- sub("\\.csv$", ".zip", p)
+      } else {
+        say("MISSING  ", p, " (.gz or .zip)"); ok <- FALSE; next
+      }
     }
-    hdr <- names(utils::read.csv(p, nrows = 1L, stringsAsFactors = FALSE))
+    hdr <- if (endsWith(p, ".zip")) {
+      con <- unz(p, e$name)
+      names(utils::read.csv(con, nrows = 1L, stringsAsFactors = FALSE))
+    } else {
+      names(utils::read.csv(p, nrows = 1L, stringsAsFactors = FALSE))
+    }
     miss <- setdiff(e$required, hdr)
     if (length(miss) > 0L) {
       say("BAD      ", p, " — missing column(s): ", paste(miss, collapse = ", "))
