@@ -1,10 +1,11 @@
-# Replication data snapshot — specification
+# Harvard Dataverse deposit — specification
 
-**Status: The replication data snapshot is published directly in this repository under `replication/data/`**, clearly dated with API timestamp `2026-09-13T06:12:32Z`. It is available in compressed format (`panel.csv.gz`, `panel.zip`), split by metro (`by_metro/panel_metro_*.csv.gz`), and accompanied by `zone_pairs.csv[.gz]`, `policy_schedules.csv[.gz]`, `metro_roster.csv[.gz]`, and `MANIFEST.json`.
+**Status: the extract EXISTS and has been fitted end-to-end; nothing is
+uploaded yet and the DOI is still a placeholder.** This file says exactly what
+to upload when Tim is ready; it does not upload anything, and no script in this
+repository will invent a DOI.
 
-## 0. The repository snapshot
-
-The snapshot in `replication/data/` was pulled from the public CP Portal API and verified end-to-end against the panel contract and no-licensed gates.
+## 0. The extract that actually exists
 
 `replication/make_extract.R` was run for real on **2026-08-28** and its output
 was fitted end-to-end by `replication/run_replication.R` (19.9 min) and compared

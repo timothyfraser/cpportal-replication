@@ -2,9 +2,9 @@
 
 Replication materials for the CP Portal congestion-pricing air-quality study.
 
-> **Paper title:** _Congestion Pricing Durably Cut PM2.5 in Seven Global Cities, 2000–2026_
+> **Paper title:** _placeholder — set when the manuscript title is final._
 > **Author:** Timothy Fraser (Cornell University), `tmf77@cornell.edu`
-> **Data Snapshot:** Stored directly in `replication/data/` (API stamp: `2026-09-13T06:12:32Z`)
+> **Data DOI:** _placeholder — the Harvard Dataverse deposit is not published yet._
 
 ## What this repository is
 
@@ -36,13 +36,15 @@ a file was not altered in transit.
 Rscript -e 'install.packages(c("dplyr","tidyr","lubridate","tibble","httr2","gtools","lme4","car"))'
 Rscript -e 'remotes::install_github("xuyiqing/fect")'
 
-# 2. prove the pipeline runs on the synthetic fixture
+# 2. prove the pipeline runs, with no data and no credentials
 Rscript replication/run_replication.R --dry-run
 
-# 3. the real thing: data snapshot stored directly in repository (replication/data/)
-# Dated with API date-time stamp: 2026-09-13T06:12:32Z
-# Reads panel.csv, panel.csv.gz, panel.zip, or reassembles from by_metro/
-Rscript replication/run_replication.R --data-dir replication/data --out out
+# 3. the real thing, once the deposit is published
+export DATAVERSE_API_KEY=...            # Harvard Dataverse -> Account -> API Token
+Rscript replication/pull_dataverse.R --doi doi:10.7910/DVN/XXXXXX
+
+# 4. fit (hours-scale; see "Runtime" below) and compare against the paper
+Rscript replication/run_replication.R --extract replication/data --out out
 Rscript replication/reproduce_paper.R  --run out --out REPRODUCTION_REPORT.md
 ```
 

@@ -480,6 +480,393 @@ combine_att_window_d2c <- function(rows, unit_rows = NULL,
   add_cols(out, J, s2_b)
 }
 
+#' Describe a pooled monitor-set reading by where its monitors sit — inside the
+#' cordon, outside it, or both.
+#'
+#' WHY THIS EXISTS (2026-08-30, journalist persona, live-verified). Picking ten
+#' Brooklyn monitors produced "Average effect across your selected monitors:
+#' +0.99 (CI [+0.94, +1.03])" above badges reading "0 treated · 10 control".
+#' A reader lands on "0 treated" and concludes the +0.99 is a placebo — that the
+#' portal just headlined an effect over monitors nothing happened to.
+#'
+#' **That reading is wrong, and the number is not the bug — the vocabulary is.**
+#' Out-of-cordon monitors get their effects from the WHOLE-METRO model, not from
+#' nothing: `/monitor-set-att-series`'s `scope="auto"` branch sources each
+#' monitor from the pin that covers it — zone-pin `per_day_metro_unit` cells for
+#' monitors inside the cordon, metro-pin cells for the ones outside — and pools
+#' them together (app/v2/api/plumber.R, the `used_zone` / `used_metro` block
+#' ~line 1689, surfaced as `scope_used` + `n_zone_monitors` /
+#' `n_metro_monitors`). A Brooklyn set's +0.99 IS congestion pricing's estimated
+#' effect as seen at those monitors. Showing effects outside the cordon is the
+#' point of the map, not a defect in it.
+#'
+#' What misleads is that the roster's `treated` flag is literally cordon-polygon
+#' membership — `ST_Covers(zone.geometry, monitor)` with
+#' `system_type = 'cordon'`, `.cpportal_enrich_monitors_from_policy_zones()`,
+#' app/v2/api/R/data_fetch.R:2623 — dressed up in treatment/control words it
+#' cannot support. So the server now reports the composition in the vocabulary
+#' that is actually true, and the client labels it that way. NOTHING is
+#' suppressed: `att`, `se`, `ci_*` are bit-identical to what this endpoint
+#' returned before these fields existed, and every set keeps its headline.
+#' `docs/PIPELINE.md` rule 1 holds — no endpoint semantics were rewritten.
+#'
+#' @param n_in_zone,n_out_zone Contributing monitors sourced from the zone pin
+#'   (inside the cordon) and from the metro pin (outside it) — the real model
+#'   grain each monitor's cells came from, not a roster guess.
+#' @return `"in_zone"`, `"out_of_zone"`, `"mixed"`, or `NA_character_` when the
+#'   split is unknown (e.g. the anchored basis, which has no per-monitor
+#'   decomposition at all). `NA` means "do not label", never "assume".
+cpportal_set_zone_composition <- function(n_in_zone, n_out_zone) {
+  ni <- suppressWarnings(as.integer(n_in_zone))
+  no <- suppressWarnings(as.integer(n_out_zone))
+  if (!is.finite(ni) && !is.finite(no)) return(NA_character_)
+  if (!is.finite(ni)) ni <- 0L
+  if (!is.finite(no)) no <- 0L
+  if (ni + no == 0L) return(NA_character_)
+  if (ni == 0L) "out_of_zone" else if (no == 0L) "in_zone" else "mixed"
+}
+
+#' Whole-treated-window pooled ATT for a user-selected monitor set.
+#'
+#' The map's Selected-set card (and the in-app Map Guide's promised "mean ATT")
+#' needs ONE quotable number for the monitors the user lassoed, not just the
+#' monthly ribbon `/monitor-set-att-series` already returns. This is that
+#' number, and it is deliberately NOT new math: it hands the SAME cell rows the
+#' monthly pool consumes to `combine_att_window_d2b()` once over the whole
+#' window instead of once per calendar month, which is exactly what
+#' `metro_window_estimate()` (`/window`) and `summarize_window_att()` (paper
+#' Table 2) do for a metro. On the fitted basis that is the flat IVW over
+#' monitor-day cells (Tim's 2026-08-14 ruling); on the anchored basis it is the
+#' Huber location + D2b SE over metro-day anchored rows.
+#'
+#' ESTIMAND: windowed **charged-days** ATT. `combine_att_window_d2b()` applies
+#' `cpportal_charged_days_filter()` + `cpportal_episode_days_filter()` itself;
+#' the same (idempotent, remove-only) cuts run here FIRST so the reported
+#' `n_monitors_est` / `n_monitor_days` describe the rows that actually entered
+#' the pool rather than the rows that were handed in. Nothing but a
+#' charged-days estimand is publicly shareable.
+#'
+#' @param rows Cell rows for the set, already restricted to the target monitors
+#'   and metro: `per_day_metro_unit` (fitted) or `per_day_metro_imputed`
+#'   (anchored). Must carry `att` + `se_att`, and `metro_id` + `day` for the
+#'   estimand cuts to bite (fail-open otherwise, same as every other combiner).
+#' @param basis "fitted" or "anchored".
+#' @param n_selected How many monitor ids the caller asked for. Reported next to
+#'   `n_monitors_est` so the UI can say "8 of 11 selected monitors contributed".
+#' @param include_inactive Diagnostic escape hatch — never a reporting option.
+#' @param n_in_zone,n_out_zone How many CONTRIBUTING monitors were sourced from
+#'   the zone pin (inside the cordon) vs the metro pin (outside it). Purely
+#'   descriptive — it lets the client say where the reading comes from instead
+#'   of mislabelling out-of-cordon sites "control". `NA_integer_` when unknown,
+#'   which sets `composition` to `NA` and tells the client not to label.
+#' @return A one-element list (JSON object, not a row) with `att`, `se`,
+#'   `ci_lo`, `ci_hi`, `p_value`, `n_monitors_est`, `n_monitor_days`,
+#'   `n_selected`, `date_from`, `date_to`, `basis`, `se_source`, `estimand`,
+#'   `n_in_zone`, `n_out_zone`, `composition`.
+cpportal_monitor_set_window_summary <- function(rows,
+                                                basis = c("fitted", "anchored"),
+                                                n_selected = NA_integer_,
+                                                include_inactive = FALSE,
+                                                n_in_zone = NA_integer_,
+                                                n_out_zone = NA_integer_) {
+  basis <- match.arg(basis)
+  composition <- cpportal_set_zone_composition(n_in_zone, n_out_zone)
+  estimand <- if (isTRUE(include_inactive)) {
+    "all_days_diagnostic"
+  } else {
+    "windowed_charged_days"
+  }
+  empty <- list(
+    att = NA_real_, se = NA_real_, ci_lo = NA_real_, ci_hi = NA_real_,
+    p_value = NA_real_, n_monitors_est = 0L, n_monitor_days = 0L,
+    n_selected = as.integer(n_selected),
+    date_from = NA_character_, date_to = NA_character_,
+    basis = basis, se_source = NA_character_, estimand = estimand,
+    n_in_zone = as.integer(n_in_zone),
+    n_out_zone = as.integer(n_out_zone),
+    composition = composition
+  )
+  if (is.null(rows) || !is.data.frame(rows) || nrow(rows) == 0L) return(empty)
+
+  keep <- cpportal_charged_days_filter(rows, include_inactive = include_inactive)
+  keep <- cpportal_episode_days_filter(keep)
+  if (is.null(keep) || nrow(keep) == 0L) return(empty)
+
+  # Counts describe the POST-cut pool. `n_monitors_est` < the number the user
+  # selected whenever a picked monitor has no cells in the pin (never fitted,
+  # or only non-charging days) — the UI is expected to say so.
+  uc <- .cpportal_unit_id_col(keep)
+  n_monitors <- if (is.na(uc)) 0L else {
+    ids <- as.character(keep[[uc]])
+    length(unique(ids[!is.na(ids) & nzchar(ids)]))
+  }
+  dc <- intersect(c("day", "date"), names(keep))[1]
+  dts <- if (is.na(dc)) as.Date(character()) else suppressWarnings(as.Date(keep[[dc]]))
+  dts <- dts[!is.na(dts)]
+
+  est <- combine_att_window_d2b(keep, basis = basis,
+                                include_inactive = include_inactive)
+  p <- if (is.finite(est$att) && is.finite(est$se_att) && est$se_att > 0) {
+    2 * stats::pnorm(-abs(est$att) / est$se_att)
+  } else NA_real_
+
+  list(
+    att            = as.numeric(est$att),
+    se             = as.numeric(est$se_att),
+    ci_lo          = as.numeric(est$att_lo),
+    ci_hi          = as.numeric(est$att_hi),
+    p_value        = as.numeric(p),
+    n_monitors_est = as.integer(n_monitors),
+    n_monitor_days = as.integer(nrow(keep)),
+    n_selected     = as.integer(n_selected),
+    date_from      = if (length(dts)) as.character(min(dts)) else NA_character_,
+    date_to        = if (length(dts)) as.character(max(dts)) else NA_character_,
+    basis          = basis,
+    se_source      = if ("se_source" %in% names(est)) as.character(est$se_source) else NA_character_,
+    estimand       = estimand,
+    n_in_zone      = as.integer(n_in_zone),
+    n_out_zone     = as.integer(n_out_zone),
+    composition    = composition
+  )
+}
+
+#' Monthly ATT series for a monitor set — the SAME estimand as the headline.
+#'
+#' WHY THIS EXISTS (2026-08-30). `/monitor-set-att-series` and
+#' `/monitor-att-series` used to build their monthly ribbon with a bespoke
+#' "direct S4 pool" defined inline in plumber.R: `att = mean(diff)` over the
+#' RAW per-cell rows, `se_att = sqrt(sum(sediff^2)) / n`. Three things were
+#' wrong with that, and none of them is a matter of taste:
+#'
+#' 1. **It pooled all days.** `CLAUDE.md` states the universal rule — "Charged
+#'    days are the universal ATT estimand. Non-operating days are excluded at
+#'    the pooling/serving stage for every method, fitted rows included ... a new
+#'    endpoint that pools raw per-day rows without this filter will not match
+#'    Table 2." The S4 pool was exactly that endpoint. `docs/PIPELINE.md` rule 6
+#'    then forbids putting an all-days pool in the app, and the map's monthly
+#'    ribbon is in the app.
+#'
+#' 2. **It was inconsistent with its own anchored twin.** The anchored branch of
+#'    the same endpoint has always built its months with
+#'    `group_modify(combine_att_window_d2b(basis = "anchored"))`, which applies
+#'    both estimand cuts internally. So one endpoint served a charged-days
+#'    monthly series for Oslo and an all-days one for London, under one field
+#'    name and one chart caption.
+#'
+#' 3. **Its stated justification expired on 2026-08-14.** The inline comment
+#'    declined `combine_att_window_d2b` because "its D2a fallback (mean of
+#'    per-day SEs, no sqrt(n) shrink) ... gives spuriously wide SEs at the
+#'    per-monitor grain". Tim's 2026-08-14 estimand ruling replaced the fitted
+#'    branch of that combiner with flat IVW over monitor-day cells and deleted
+#'    the D2a fallback ("No D2a fallback, no per-monitor stage", this file's
+#'    FITTED PRODUCTION PATH). IVW SE is `sqrt(1 / sum(1/se^2))`, which shrinks
+#'    like sqrt(n) — the very property the bespoke pool was written to keep.
+#'
+#' This is NOT a third estimator (`docs/PIPELINE.md` rule 3). It is the identical
+#' filter-and-pool stack `cpportal_monitor_set_window_summary()` runs, grouped by
+#' calendar month instead of over the whole window.
+#'
+#' EXACT RE-POOLING PROPERTY. Because the fitted pool is inverse-variance and the
+#' months partition the filtered cells, re-pooling this series by IVW recovers
+#' the headline EXACTLY, not approximately: with `w_m = 1/se_m^2 = W_m` and
+#' `att_m = sum_{i in m} w_i att_i / W_m`, we get
+#' `sum_m w_m att_m / sum_m w_m = sum_i w_i att_i / sum_i w_i`. The old flat mean
+#' has no such property, which is why the ribbon and the headline could not be
+#' reconciled and the UI had to disclaim them as different cuts.
+#'
+#' @param rows Cell rows for the set — `per_day_metro_unit` (fitted) or
+#'   `per_day_metro_imputed` (anchored). Needs `att`, `se_att`, and `day` +
+#'   `metro_id` for the cuts to bite (fail-open otherwise, as everywhere else).
+#' @param basis "fitted" or "anchored".
+#' @param include_inactive Diagnostic escape hatch — never a reporting option.
+#'   TRUE restores the all-days pool (still IVW, never the old flat mean).
+#' @return Tibble: `month`, `att`, `se_att`, `att_lo`, `att_hi`, `p_value`,
+#'   `n_days`, `n_monitors`, `basis`. Zero rows when nothing survives the cuts.
+cpportal_monitor_set_month_series <- function(rows,
+                                              basis = c("fitted", "anchored"),
+                                              include_inactive = FALSE) {
+  basis <- match.arg(basis)
+  empty <- tibble::tibble(
+    month = character(), att = numeric(), se_att = numeric(),
+    att_lo = numeric(), att_hi = numeric(), p_value = numeric(),
+    n_days = integer(), n_monitors = integer(), basis = character()
+  )
+  if (is.null(rows) || !is.data.frame(rows) || nrow(rows) == 0L) return(empty)
+
+  # The SAME two cuts the headline runs, in the same order. Applying them here
+  # as well as inside combine_att_window_d2b() is deliberate and harmless (both
+  # are idempotent and remove-only): it makes `n_days` / `n_monitors` describe
+  # the rows that actually entered each month's pool.
+  keep <- cpportal_charged_days_filter(rows, include_inactive = include_inactive)
+  keep <- cpportal_episode_days_filter(keep)
+  if (is.null(keep) || nrow(keep) == 0L) return(empty)
+
+  dc <- intersect(c("day", "date"), names(keep))[1]
+  if (!("month" %in% names(keep))) {
+    if (is.na(dc)) return(empty)
+    keep$month <- format(as.Date(keep[[dc]]), "%Y-%m-01")
+  }
+  keep$month <- as.character(keep$month)
+  keep <- keep[!is.na(keep$month), , drop = FALSE]
+  if (nrow(keep) == 0L) return(empty)
+
+  uc <- .cpportal_unit_id_col(keep)
+
+  out <- keep |>
+    dplyr::group_by(.data$month) |>
+    dplyr::group_modify(function(.x, .key) {
+      est <- combine_att_window_d2b(.x, basis = basis,
+                                    include_inactive = include_inactive)
+      n_mon <- if (is.na(uc) || !(uc %in% names(.x))) NA_integer_ else {
+        ids <- as.character(.x[[uc]])
+        length(unique(ids[!is.na(ids) & nzchar(ids)]))
+      }
+      tibble::tibble(
+        att        = as.numeric(est$att),
+        se_att     = as.numeric(est$se_att),
+        att_lo     = as.numeric(est$att_lo),
+        att_hi     = as.numeric(est$att_hi),
+        n_days     = nrow(.x),
+        n_monitors = as.integer(n_mon)
+      )
+    }) |>
+    dplyr::ungroup()
+
+  out |>
+    dplyr::mutate(
+      p_value = dplyr::if_else(
+        is.finite(.data$att) & is.finite(.data$se_att) & .data$se_att > 0,
+        2 * stats::pnorm(-abs(.data$att) / .data$se_att),
+        NA_real_
+      ),
+      basis = basis
+    ) |>
+    dplyr::arrange(.data$month)
+}
+
+
+# -----------------------------------------------------------------------------
+# Per-monitor whole-window effects for a whole metro (map colour ramp feed)
+# -----------------------------------------------------------------------------
+
+.cpportal_monitor_effects_cache <- new.env(parent = emptyenv())
+
+#' Windowed ATT for EVERY modeled monitor in a metro, one row per monitor.
+#'
+#' Why this exists: the map's effect colour ramp reads `monitor.att` off the
+#' `/monitors` roster, and that column was null for every site — `/monitors`
+#' comes from `public.monitors`, which knows nothing about the model. The
+#' Effects table's per-monitor numbers come from the pin's `per_monitor`
+#' aggregate (`.cpportal_att_monitor_level_from_bundle()`,
+#' app/v2/api/R/data_fetch.R:1346), which is an **all-days** pool and therefore
+#' not publicly shareable on its own terms.
+#'
+#' So this computes the *shareable* estimand instead, by reusing the exact pool
+#' the Selected-set card already serves: a monitor is a one-element monitor set,
+#' so per-monitor effect = `cpportal_monitor_set_window_summary()` (this file,
+#' ~line 514) with `n_selected = 1`. That routes through
+#' `cpportal_charged_days_filter()` + `cpportal_episode_days_filter()` +
+#' `combine_att_window_d2b()` — windowed charged-days, identical cuts to
+#' `/monitor-set-att-series?include_summary=1` and to Table 2's family. Raw pin
+#' rows are never returned.
+#'
+#' Coverage is deliberately partial. Only `per_day_metro_unit` cells exist, and
+#' only for **fitted** metros; anchored metros (Oslo at zone scope) put the
+#' anchor at the metro basis and have no per-monitor decomposition at all. Every
+#' monitor without cells is simply absent from the result and stays `att = NA`
+#' downstream — the map's "without an estimate" legend is the honest rendering.
+#'
+#' @param metro_id Metro id.
+#' @param pollutant Pollutant code, passed to `cross_city_filter_bundle_att()`.
+#' @param spec_id,outcome,scope Pin selectors; defaults match
+#'   `/monitor-set-att-series`.
+#' @return Tibble `monitor_id`, `att`, `se`, `ci_lo`, `ci_hi`, `n_days`,
+#'   `basis`, `estimand` — one row per monitor that has cells after the cuts.
+#'   Zero rows when the pin is missing or the metro is anchored.
+cpportal_monitor_window_effects <- function(metro_id,
+                                            pollutant = "PM2.5",
+                                            spec_id = "all_priority",
+                                            outcome = "aq_daily_mean",
+                                            scope = "zone") {
+  empty <- tibble::tibble(
+    monitor_id = character(), att = numeric(), se = numeric(),
+    ci_lo = numeric(), ci_hi = numeric(), n_days = integer(),
+    basis = character(), estimand = character()
+  )
+  mid <- suppressWarnings(as.integer(metro_id))
+  if (!is.finite(mid)) return(empty)
+
+  key <- paste(mid, pollutant, spec_id, outcome, scope, sep = "|")
+  if (exists(key, envir = .cpportal_monitor_effects_cache, inherits = FALSE)) {
+    return(get(key, envir = .cpportal_monitor_effects_cache))
+  }
+
+  finish <- function(x) {
+    assign(key, x, envir = .cpportal_monitor_effects_cache)
+    x
+  }
+
+  bundle <- tryCatch(load_fect_bundle(spec_id, outcome = outcome, scope = scope),
+                     error = function(e) NULL)
+  if (is.null(bundle) || is.null(bundle$att) || !"type" %in% names(bundle$att)) {
+    return(finish(empty))
+  }
+  a <- tryCatch(cross_city_filter_bundle_att(bundle$att, pollutant),
+                error = function(e) NULL)
+  if (!is.data.frame(a) || nrow(a) == 0L || !"metro_id" %in% names(a)) {
+    return(finish(empty))
+  }
+
+  uc <- intersect(c("fullaqsid", "monitor_id", "unit_id"), names(a))[1]
+  dc <- intersect(c("day", "date"), names(a))[1]
+  sc <- intersect(c("sediff", "se_att", "sediff_native"), names(a))[1]
+  if (is.na(uc) || is.na(dc) || is.na(sc)) return(finish(empty))
+
+  # Same normalisation `/monitor-set-att-series`'s `extract_pdu()` performs
+  # (app/v2/api/plumber.R, "Extract a bundle's per_day_metro_unit rows"):
+  # `metro_id` + `day` so the charged-days cut bites, `episode_flag` so the
+  # episode cut does, and canonical `fullaqsid` so `.cpportal_unit_id_col()`
+  # counts monitors the way every other combiner counts them.
+  cells <- a |>
+    dplyr::filter(.data$type == "per_day_metro_unit",
+                  suppressWarnings(as.integer(.data$metro_id)) == !!mid) |>
+    dplyr::mutate(
+      fullaqsid = as.character(.data[[uc]]),
+      day       = as.Date(.data[[dc]]),
+      att       = as.numeric(.data$att),
+      se_att    = as.numeric(.data[[sc]])
+    ) |>
+    dplyr::filter(is.finite(.data$att), nzchar(.data$fullaqsid), !is.na(.data$day))
+  keep_cols <- intersect(c("metro_id", "episode_flag"), names(cells))
+  cells <- dplyr::select(cells, dplyr::all_of(c("fullaqsid", "day", "att",
+                                                "se_att", keep_cols)))
+  if (nrow(cells) == 0L) return(finish(empty))
+
+  ids <- sort(unique(cells$fullaqsid))
+  rows <- lapply(ids, function(id) {
+    s <- cpportal_monitor_set_window_summary(
+      cells[cells$fullaqsid == id, , drop = FALSE],
+      basis = "fitted", n_selected = 1L
+    )
+    tibble::tibble(
+      monitor_id = id,
+      att        = as.numeric(s$att),
+      se         = as.numeric(s$se),
+      ci_lo      = as.numeric(s$ci_lo),
+      ci_hi      = as.numeric(s$ci_hi),
+      n_days     = as.integer(s$n_monitor_days),
+      basis      = as.character(s$basis),
+      estimand   = as.character(s$estimand)
+    )
+  })
+  out <- dplyr::bind_rows(rows)
+  # A monitor whose cells all fell to the estimand cuts has no shareable
+  # estimate; drop it rather than publishing an NA that reads as a zero.
+  out <- dplyr::filter(out, is.finite(.data$att), .data$n_days > 0L)
+  finish(if (nrow(out) == 0L) empty else out)
+}
+
+
 #' Hybrid calendar-window ATT — ONE estimate pooling BOTH bases.
 #'
 #' Motivation (2026-07-30 London audit): a window like CCZ 2003→2011 contains
@@ -799,7 +1186,14 @@ build_london_ulez_cache_rows <- function(bundle, pollutant, outcome = "aq_daily_
       "day", "event_day", "att", "se_att",
       "varc_shared_md", "varc_indep_md",
       "pct_change", "obs",
-      "yhat0", "yhat0_lo", "yhat0_hi", "yhat1", "n_effects", "basis"
+      "yhat0", "yhat0_lo", "yhat0_hi", "yhat1", "n_effects", "basis",
+      # Carry `episode_flag` through the cache. It is stamped on the day-grain
+      # ATT types (FECT_EPISODE_DAY_TYPES, job/model/fect/train/episode_lib.R:130)
+      # and survives every step above, but this explicit select used to drop it —
+      # which silently reduced `cpportal_episode_days_filter()` to its fail-open
+      # branch at every downstream cache consumer. `any_of()` keeps older pins
+      # that predate the column working unchanged.
+      dplyr::any_of("episode_flag")
     ) |>
     dplyr::arrange(.data$day)
 }
@@ -1011,7 +1405,14 @@ build_event_time_att_cache <- function(bundle, pollutant, periods_df, metro_look
       "day", "event_day", "att", "se_att",
       "varc_shared_md", "varc_indep_md",
       "pct_change", "obs",
-      "yhat0", "yhat0_lo", "yhat0_hi", "yhat1", "n_effects", "basis"
+      "yhat0", "yhat0_lo", "yhat0_hi", "yhat1", "n_effects", "basis",
+      # Carry `episode_flag` through the cache. It is stamped on the day-grain
+      # ATT types (FECT_EPISODE_DAY_TYPES, job/model/fect/train/episode_lib.R:130)
+      # and survives every step above, but this explicit select used to drop it —
+      # which silently reduced `cpportal_episode_days_filter()` to its fail-open
+      # branch at every downstream cache consumer. `any_of()` keeps older pins
+      # that predate the column working unchanged.
+      dplyr::any_of("episode_flag")
     ) |>
     dplyr::arrange(.data$metro_id, .data$day)
 }

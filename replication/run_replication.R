@@ -203,51 +203,23 @@ if (!requireNamespace("fect", quietly = TRUE)) {
 # 2. Inputs
 # -----------------------------------------------------------------------------
 read_csv_strict <- function(dir, name, required) {
-  # An extract can ship plain (.csv), gzipped (.csv.gz), zipped (.zip),
-  # or split across per-metro files (by_metro/panel_metro_*.csv[.gz]).
-  # Read whichever is present, and seamlessly reassemble if split.
-  p_gz    <- file.path(dir, paste0(name, ".gz"))
-  p_plain <- file.path(dir, name)
-  p_zip   <- file.path(dir, sub("\\.csv$", ".zip", name))
-
-  base_stem   <- sub("\\.csv$", "", name)
-  split_files <- c(
-    Sys.glob(file.path(dir, "by_metro", paste0(base_stem, "_metro_*.csv.gz"))),
-    Sys.glob(file.path(dir, "by_metro", paste0(base_stem, "_metro_*.csv"))),
-    Sys.glob(file.path(dir, paste0(base_stem, "_metro_*.csv.gz"))),
-    Sys.glob(file.path(dir, paste0(base_stem, "_metro_*.csv")))
-  )
-  split_files <- unique(split_files)
-
-  if (file.exists(p_gz)) {
-    x <- utils::read.csv(p_gz, colClasses = c(fullaqsid = "character"), stringsAsFactors = FALSE)
-  } else if (file.exists(p_plain)) {
-    x <- utils::read.csv(p_plain, colClasses = c(fullaqsid = "character"), stringsAsFactors = FALSE)
-  } else if (file.exists(p_zip)) {
-    say("uncompressing ", basename(p_zip), " on the fly...")
-    con <- unz(p_zip, name)
-    x <- utils::read.csv(con, colClasses = c(fullaqsid = "character"), stringsAsFactors = FALSE)
-  } else if (length(split_files) > 0L) {
-    say("reassembling ", name, " from ", length(split_files), " split metro file(s)...")
-    parts <- lapply(sort(split_files), function(f) {
-      df <- utils::read.csv(f, colClasses = c(fullaqsid = "character"), stringsAsFactors = FALSE)
-      if ("fullaqsid" %in% names(df)) df$fullaqsid <- as.character(df$fullaqsid)
-      df
-    })
-    x <- dplyr::bind_rows(parts)
-  } else {
-    stop("missing input: ", file.path(dir, name), " (.gz, .zip, or by_metro/ split files)", call. = FALSE)
+  # An extract from make_extract.R ships gzipped; the fixture and the Dataverse
+  # download ship plain. Accept either, prefer .gz.
+  p <- file.path(dir, paste0(name, ".gz"))
+  if (!file.exists(p)) p <- file.path(dir, name)
+  if (!file.exists(p)) {
+    stop("missing input: ", file.path(dir, name), " (or .gz)", call. = FALSE)
   }
-
+  x <- utils::read.csv(p, stringsAsFactors = FALSE)
   miss <- setdiff(required, names(x))
   if (length(miss) > 0L) {
-    stop(name, " is missing required column(s): ", paste(miss, collapse = ", "),
+    stop(p, " is missing required column(s): ", paste(miss, collapse = ", "),
          "\nSee replication/panel_contract.md.", call. = FALSE)
   }
   # A deposit must never carry a licensed TomTom column. Same predicate the
   # extract builder asserts on, applied again at READ time so a hand-edited or
   # re-downloaded input cannot slip one in.
-  assert_no_licensed(names(x), what = name)
+  assert_no_licensed(names(x), what = basename(p))
   tibble::as_tibble(x)
 }
 

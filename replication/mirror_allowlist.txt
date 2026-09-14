@@ -58,6 +58,16 @@ replication/paper_values.json
 replication/launch_real_run.sh
 
 # --- DELIBERATELY NOT MIRRORED ----------------------------------------------
+# job/model/breathe/**
+# job/model/ifat/**
+#   In-development ML framework (BREATHE / iFAT). Not ready for public release.
+#   Only fect/* is shared with the public replication repository.
+#
+# replication/data/**
+#   The replication data snapshot is published directly to cpportal-replication
+#   and maintained there. The mirror workflow preserves replication/data/ on the
+#   target repo so mirroring code updates never deletes or overwrites the data snapshot.
+#
 # replication/make_extract.R
 #   PRODUCTION-mode. It is the one file in replication/ that reads `job/.env`
 #   for PG* credentials and issues SQL against the private Postgres/PostGIS

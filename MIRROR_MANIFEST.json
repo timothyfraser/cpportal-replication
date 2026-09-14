@@ -1,10 +1,10 @@
 {
   "generated_by": "cpportal/.github/workflows/mirror-replication.yml",
   "source_repo": "timothyfraser/cpportal",
-  "source_sha": "28ae7491165f577829244d524291862eac0ba587",
+  "source_sha": "59f9617058ae459f4dac7454c32c95b087af3d04",
   "source_ref": "refs/heads/main",
-  "workflow_run": "https://github.com/timothyfraser/cpportal/actions/runs/33237133102",
-  "generated_at_utc": "2026-08-29T05:52:29Z",
+  "workflow_run": "https://github.com/timothyfraser/cpportal/actions/runs/34798790092",
+  "generated_at_utc": "2026-09-14T02:19:49Z",
   "files": [
     {"path": "job/model/functions.R", "sha256": "5651e98ea7d3a69805a192c43548c425f13092a7e944df0ce3249054b3da9be0", "bytes": 47824}
     ,
@@ -18,7 +18,7 @@
     ,
     {"path": "job/model/fect/train/gap_shape.R", "sha256": "a99777ae2a5ef2be3cc3fbc47f6d4c301c581271851904c5b2235f79826c0f53", "bytes": 105771}
     ,
-    {"path": "app/v2/api/R/cross_city_att.R", "sha256": "3e45acaa1868e4daa59c12c772978e5db063624722cc39e62c80428e095e4022", "bytes": 123185}
+    {"path": "app/v2/api/R/cross_city_att.R", "sha256": "e8dad7b69a9c7939d64e48865cefd0c120038aa489a31b6c0505a49da19d66b1", "bytes": 143875}
     ,
     {"path": "replication/README.md", "sha256": "0b0967ccf6c422c1e8e8ca19dd0fde8f87544b7ba5591d25fd406e30bdf1611e", "bytes": 11768}
     ,
@@ -32,11 +32,11 @@
     ,
     {"path": "replication/generate_panel_contract.R", "sha256": "a8362913d90a52ae2666b264f073b8a75e5decf05039e589f067ba40822406ce", "bytes": 11985}
     ,
-    {"path": "replication/audit_mirror.R", "sha256": "ca3c16b331818937a6455d0f2d716168bbdf65cffd0bcce43c3d7e1c74da8eba", "bytes": 9568}
+    {"path": "replication/audit_mirror.R", "sha256": "7f0e18f51733158e6abea1f34a1b13d352516cdf2c741fd9c8c7f5f64bd9e923", "bytes": 10433}
     ,
     {"path": "replication/check_no_licensed.R", "sha256": "13cd7f70b13f5f7fa062de4eef84be180ba0c2b0fb57b699be538b186549618e", "bytes": 10165}
     ,
-    {"path": "replication/mirror_allowlist.txt", "sha256": "c92f48544bb34ac20b9f4771b89cd002f4e3c22ba92185d931c5a1c2efc3f385", "bytes": 3464}
+    {"path": "replication/mirror_allowlist.txt", "sha256": "b2a2df7b344f58b3d26ca66b01e2c94fa87af8484a604acf373c1155efb47cfc", "bytes": 3929}
     ,
     {"path": "replication/fixtures/make_fixture.R", "sha256": "40a32fa6d68df695c3d50ee12ecd5822e1f73344b58493fccab74afb1ef7674d", "bytes": 7313}
     ,

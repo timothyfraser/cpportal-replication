@@ -48,6 +48,23 @@ read_allowlist <- function(path) {
 
 paths <- read_allowlist(allowlist_path)
 
+fail <- list()
+note <- function(path, line_no, id, text) {
+  fail[[length(fail) + 1L]] <<- sprintf("  %s:%d  [%s]  %s",
+                                        path, line_no, id, trimws(substr(text, 1L, 140L)))
+}
+
+# --- strictly forbidden modules: breathe / ifat ------------------------------
+# BREATHE and iFAT are in-development ML frameworks and must NEVER be mirrored.
+# Only fect/* is shared with cpportal-replication.
+breathe_hits <- grep("(?i)breathe|ifat", paths, perl = TRUE, value = TRUE)
+if (length(breathe_hits) > 0L) {
+  for (b in breathe_hits) {
+    note(b, 0L, "forbidden_module",
+         "breathe and iFAT modules are not ready and must NEVER be mirrored to cpportal-replication; only fect/* is shared.")
+  }
+}
+
 # --- the grandfathered .env read ---------------------------------------------
 # job/model/functions.R is the shared model-utility file. 9 of its 14 functions
 # are DB-free math the replication runner genuinely calls (add_treatment_zones,
@@ -100,12 +117,6 @@ BENIGN <- c(
   "DATAVERSE_API_KEY"           # ditto
 )
 
-fail <- list()
-note <- function(path, line_no, id, text) {
-  fail[[length(fail) + 1L]] <<- sprintf("  %s:%d  [%s]  %s",
-                                        path, line_no, id, trimws(substr(text, 1L, 140L)))
-}
-
 missing <- character(0)
 
 for (p in paths) {
@@ -124,6 +135,14 @@ for (p in paths) {
       if (any(vapply(BENIGN, function(b) grepl(b, lines[[h]], fixed = TRUE),
                      logical(1L)))) next
       note(p, h, f$id, lines[[h]])
+    }
+  }
+
+  # Ensure no mirrored code imports or sources breathe or ifat modules
+  breathe_code_hits <- grep("(?i)(job/model/(breathe|ifat)|breathe/|ifat/)", lines, perl = TRUE)
+  for (h in breathe_code_hits) {
+    if (grepl("(?i)(source\\s*\\(|library\\s*\\(|require\\s*\\()", lines[[h]])) {
+      note(p, h, "forbidden_breathe_call", lines[[h]])
     }
   }
 
