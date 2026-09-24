@@ -3869,6 +3869,34 @@ train_fect_bundle = function(db, spec) {
     }
   }
 
+  # Placebo cells — untreated cells of fitted treated monitors with the model's
+  # counterfactual (fect_placebo_cells(), below). NEW top-level element, never
+  # rows in `att` (cross_city_filter_bundle_att() does not filter on type). No
+  # refit: reads Y.dat / Y.ct off the live fit `m`. Same fail-soft contract as
+  # the two exports above. Kill switch: CPPORTAL_FECT_PLACEBO_CELLS=0.
+  if (fect_placebo_cells_enabled()) {
+    placebo_cells = tryCatch(
+      fect_placebo_cells(m, panel, spec),
+      error = function(e) {
+        message("[fect.train.placebo] spec=", spec$id,
+                " fect_placebo_cells failed: ", conditionMessage(e))
+        NULL
+      }
+    )
+    if (!is.null(placebo_cells)) {
+      set_n = table(factor(placebo_cells$cells$set,
+                           levels = c("pre_policy", "uncharged", "other_untreated")))
+      message("[fect.train.placebo] spec=", spec$id,
+              " n_cells=", placebo_cells$meta$n_cells,
+              " n_units=", placebo_cells$meta$n_units,
+              " pre_policy=", set_n[["pre_policy"]],
+              " uncharged=", set_n[["uncharged"]],
+              " other_untreated=", set_n[["other_untreated"]],
+              " beta_d_unch=", signif(placebo_cells$meta$beta_d_unch, 6))
+      bundle_out$placebo_cells = placebo_cells
+    }
+  }
+
   bundle_out
 }
 
@@ -5158,6 +5186,210 @@ fect_untreat_uncharged_days = function(panel, spec_id = NA_character_,
           " monitor-days; treatment is now NON-ABSORBING where flipped",
           " (fect handles reversals: hasRevs/T.off)")
   panel
+}
+
+# -----------------------------------------------------------------------------
+# Placebo cells: untreated cells of FITTED treated monitors, with the model's
+# counterfactual. Train-local (like fect_untreat_uncharged_days above), no refit.
+#
+# For every unit that is ever D == 1 in the fit, keep each cell with D == 0 and
+# finite Y.dat / Y.ct. These are the cells fect fits the unit/time FE on, so a
+# placebo test over them -- pre-policy days, and post-policy uncharged days
+# (D_unch == 1) -- checks whether the served counterfactual is biased on days
+# the cordon is not charging.
+#
+# Written to a NEW top-level bundle element `bundle_out$placebo_cells`. It must
+# NEVER be bound into `bundle$att`: cross_city_filter_bundle_att()
+# (app/v2/api/R/cross_city_att.R) does not filter on `type`, so extra att rows
+# would silently be pooled into served ATTs.
+#
+# The long expansion of fit$Y.dat / fit$Y.ct mirrors fect_pred_se()
+# (job/model/fect/functions_fect.R, "twoway_resid" branch): matrices are
+# [n_time x n_units] indexed by fit$rawtime (time_id) and fit$id (unit), with D
+# looked up from fect_meta$data_fit. Restricted to treated unit columns here so
+# the expansion stays small.
+#
+# yhat0_fit is Y.ct as fect returns it: X beta at the OBSERVED covariates, so it
+# includes beta_D_unch * D_unch. The served ATT evaluates the counterfactual on
+# charged treated days, where D_unch == 0 by construction; yhat0_att =
+# yhat0_fit - beta_D_unch * D_unch is that same counterfactual on these cells.
+#
+# `policy_start` is the unit's policy-window start, recovered as
+# date - days_since_treatment (add_treatment_zones() derives
+# days_since_treatment from min(start_date) over the monitor's zone pairs) --
+# NEVER from the treated flag, which the uncharged flip makes non-absorbing.
+#
+# Kill switch: CPPORTAL_FECT_PLACEBO_CELLS=0 (or false/f/no/n/off).
+fect_placebo_cells_enabled = function() {
+  v = tolower(trimws(Sys.getenv("CPPORTAL_FECT_PLACEBO_CELLS", "")))
+  if (!nzchar(v)) return(TRUE)
+  !(v %in% c("0", "false", "f", "no", "n", "off"))
+}
+
+fect_placebo_cells = function(m, panel, spec,
+                              unit_col = "fullaqsid",
+                              date_col = "date",
+                              metro_col = "metro_id",
+                              dst_col = "days_since_treatment") {
+  if (is.null(m) || is.null(m$Y.dat) || is.null(m$Y.ct)) {
+    stop("fit has no Y.dat / Y.ct", call. = FALSE)
+  }
+  meta = attr(m, "fect_meta")
+  unit_col  = meta$unit_col  %||% unit_col
+  date_col  = meta$date_col  %||% date_col
+  metro_col = meta$metro_col %||% metro_col
+
+  # Cell-level data the fit saw (D, time_id, D_unch, days_since_treatment).
+  # Prefer fect_meta$data_fit; fall back to `panel` with prepare_data_fect()'s
+  # time_id mapping (sorted unique character dates).
+  dat = meta$data_fit
+  if (is.null(dat)) {
+    if (is.null(panel)) stop("no fect_meta$data_fit and no panel", call. = FALSE)
+    dat = as.data.frame(panel)
+    dat$D = as.integer(as.logical(dat[[meta$treated_col %||% "treated"]]))
+    lv = sort(unique(as.character(dat[[date_col]])))
+    dat$time_id = match(as.character(dat[[date_col]]), lv)
+  }
+  need = c(unit_col, date_col, "time_id", "D", dst_col)
+  miss = setdiff(need, names(dat))
+  if (length(miss)) stop("fit data missing: ", paste(miss, collapse = ", "), call. = FALSE)
+  has_unch = "D_unch" %in% names(dat)
+
+  keep_cols = intersect(c(unit_col, metro_col, date_col, "time_id", "D",
+                          "D_unch", dst_col), names(dat))
+  dat = tibble::as_tibble(as.data.frame(dat)[, keep_cols, drop = FALSE])
+  dat$unit_id = as.character(dat[[unit_col]])
+  dat$time_id = as.integer(dat$time_id)
+
+  id_vec   = as.character(m$id)
+  time_vec = as.integer(m$rawtime)
+  treated_units = intersect(unique(dat$unit_id[dat$D %in% 1L]), id_vec)
+
+  # beta on D_unch, located by name as compute_frozen_components() does.
+  beta_d_unch = NA_real_
+  if (has_unch && !is.null(m$beta) && length(m$beta) > 0L) {
+    beta_vec = as.numeric(m$beta)
+    beta_nm  = rownames(m$beta)
+    if (is.null(beta_nm) || length(beta_nm) != length(beta_vec)) {
+      beta_nm = as.character(m$X %||% character(0))
+    }
+    if (length(beta_nm) != length(beta_vec)) {
+      beta_nm = as.character(meta$covariate_vars %||% character(0))
+    }
+    if (length(beta_nm) == length(beta_vec) && "D_unch" %in% beta_nm) {
+      beta_d_unch = beta_vec[match("D_unch", beta_nm)]
+    }
+  }
+
+  sigma2 = suppressWarnings(as.numeric(meta$sigma2 %||% m$sigma2 %||% NA_real_))[1]
+  lhs = paste(deparse(meta$response_lhs %||% spec$outcome %||% ""), collapse = "")
+  outcome_transform = if (grepl("sqrt\\(", lhs)) "sqrt" else "identity"
+
+  # Native (ug/m3) columns use EXACTLY the served ATT back-transform:
+  # get_simeffects_fect(backtransform = "square_moments") in
+  # job/model/fect/functions_fect.R -> fect_bt_mean_native(mu, se0), with se0
+  # from fect_cell_se0() (the get_grid_fect() analytic_se_tbl lookup + sqrt(sigma2)
+  # fallback) and get_simeffects_fect()'s non-finite/<=0 -> sigma fallback.
+  # Observed side: meta$inverse_fn (= bt_mean(y, se1 = 0) on observed cells).
+  if (!exists("fect_bt_mean_native", mode = "function") ||
+      !exists("fect_cell_se0", mode = "function") ||
+      !exists("fect_inverse_kind", mode = "function")) {
+    stop("fect_bt_mean_native / fect_cell_se0 / fect_inverse_kind not loaded ",
+         "(source job/model/fect/functions_fect.R)", call. = FALSE)
+  }
+  inverse_fn = meta$inverse_fn %||% identity
+  inv_kind = fect_inverse_kind(inverse_fn)
+  sigma_se = max(sqrt(sigma2), 1e-6)
+
+  cells = tibble::tibble(
+    metro_id = integer(0), fullaqsid = character(0), date = as.Date(character(0)),
+    y_obs = numeric(0), yhat0_fit = numeric(0), D_unch = integer(0),
+    yhat0_att = numeric(0), set = character(0), days_to_policy = integer(0),
+    policy_start = as.Date(character(0)), se0 = numeric(0),
+    y_obs_native = numeric(0), yhat0_fit_native = numeric(0),
+    yhat0_att_native = numeric(0)
+  )
+  if (length(treated_units)) {
+    u_cols = match(treated_units, id_vec)
+    n_time = length(time_vec)
+    t_idx = rep(seq_len(n_time), times = length(u_cols))
+    u_idx = rep(u_cols, each = n_time)
+    long = tibble::tibble(
+      unit_id   = id_vec[u_idx],
+      time_id   = time_vec[t_idx],
+      y_obs     = m$Y.dat[cbind(t_idx, u_idx)],
+      yhat0_fit = m$Y.ct[cbind(t_idx, u_idx)]
+    ) |>
+      dplyr::filter(is.finite(.data$y_obs), is.finite(.data$yhat0_fit))
+
+    # Policy start per unit: date - days_since_treatment (policy window).
+    ps = dat |>
+      dplyr::filter(.data$unit_id %in% treated_units,
+                    is.finite(suppressWarnings(as.numeric(.data[[dst_col]])))) |>
+      dplyr::mutate(.ps = as.Date(.data[[date_col]]) - as.integer(.data[[dst_col]])) |>
+      dplyr::summarise(policy_start = min(.data$.ps), .by = "unit_id")
+
+    d_look = dat |>
+      dplyr::filter(.data$unit_id %in% treated_units) |>
+      dplyr::mutate(
+        metro_id = if (metro_col %in% names(dat)) as.integer(.data[[metro_col]]) else NA_integer_,
+        date = as.Date(.data[[date_col]]),
+        D_unch = if (has_unch) as.integer(.data$D_unch) else 0L
+      ) |>
+      dplyr::select("unit_id", "time_id", "metro_id", "date", "D", "D_unch")
+
+    b_unch = if (is.finite(beta_d_unch)) beta_d_unch else 0
+    cells = long |>
+      dplyr::inner_join(d_look, by = c("unit_id", "time_id")) |>
+      dplyr::filter(.data$D %in% 0L) |>
+      dplyr::left_join(ps, by = "unit_id") |>
+      dplyr::mutate(
+        D_unch = dplyr::coalesce(.data$D_unch, 0L),
+        yhat0_att = .data$yhat0_fit - b_unch * .data$D_unch,
+        days_to_policy = as.integer(.data$date - .data$policy_start),
+        set = dplyr::case_when(
+          !is.na(.data$policy_start) & .data$date < .data$policy_start ~ "pre_policy",
+          .data$D_unch == 1L ~ "uncharged",
+          TRUE ~ "other_untreated"
+        )
+      ) |>
+      dplyr::transmute(
+        metro_id = .data$metro_id, fullaqsid = .data$unit_id, date = .data$date,
+        y_obs = .data$y_obs, yhat0_fit = .data$yhat0_fit, D_unch = .data$D_unch,
+        yhat0_att = .data$yhat0_att, set = .data$set,
+        days_to_policy = .data$days_to_policy, policy_start = .data$policy_start,
+        time_id = .data$time_id
+      ) |>
+      dplyr::arrange(.data$fullaqsid, .data$date)
+
+    se0 = fect_cell_se0(meta, cells$fullaqsid, cells$time_id)
+    se0 = dplyr::if_else(is.finite(se0) & se0 > 0, se0, sigma_se)
+    is_sq = identical(inv_kind, "square")
+    native_ok = inv_kind %in% c("square", "identity")
+    cells = cells |>
+      dplyr::mutate(
+        se0 = se0,
+        y_obs_native = inverse_fn(.data$y_obs),
+        yhat0_fit_native = if (native_ok) fect_bt_mean_native(.data$yhat0_fit, .data$se0, is_square = is_sq) else NA_real_,
+        yhat0_att_native = if (native_ok) fect_bt_mean_native(.data$yhat0_att, .data$se0, is_square = is_sq) else NA_real_
+      ) |>
+      dplyr::select(-"time_id")
+  }
+
+  list(
+    cells = cells,
+    meta = list(
+      beta_d_unch = beta_d_unch,
+      sigma2 = sigma2,
+      outcome_transform = outcome_transform,
+      inverse_kind = inv_kind,
+      native_backtransform = "fect_bt_mean_native (square_moments)",
+      spec_id = spec$id %||% NA_character_,
+      n_cells = nrow(cells),
+      n_units = dplyr::n_distinct(cells$fullaqsid),
+      schema_version = 2L
+    )
+  )
 }
 
 # Square back-transform (sqrt model scale -> native ug/m3). Identical closed

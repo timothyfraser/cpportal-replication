@@ -1070,18 +1070,7 @@ get_grid_fect = function(fit, data = NULL) {
   yhat1[ok] = Ydt[cbind(ti[ok], ni[ok])]
 
   # Use observation-level SEs from analytic path when available; constant proxy otherwise
-  se_vec = if (!is.null(meta$analytic_se_tbl)) {
-    se_tbl    = meta$analytic_se_tbl
-    unit_keys = as.character(data[[meta$unit_col]])
-    time_keys = as.integer(data$time_id)
-    row_key   = paste(unit_keys, time_keys, sep = "\x01")
-    tbl_key   = paste(se_tbl$unit_id, se_tbl$time_id, sep = "\x01")
-    idx       = match(row_key, tbl_key)
-    se_matched = se_tbl$se_analytic[idx]
-    dplyr::if_else(is.finite(se_matched), se_matched, se_const)
-  } else {
-    rep(se_const, nrow(data))
-  }
+  se_vec = fect_cell_se0(meta, data[[meta$unit_col]], data$time_id)
 
   grid = data |>
     mutate(
@@ -1100,6 +1089,57 @@ get_grid_fect = function(fit, data = NULL) {
     )
 
   grid
+}
+
+#' Per-cell model-scale SE for the counterfactual (`se0`)
+#'
+#' The exact lookup [get_grid_fect()] uses: match `(unit, time_id)` against
+#' `meta$analytic_se_tbl` (analytic two-way residual SEs from [get_fect()]),
+#' falling back to the constant proxy `max(sqrt(meta$sigma2), 1e-6)` when the
+#' table is absent or the cell is unmatched / non-finite. Shared so every
+#' consumer (served ATT grid, placebo cells) uses one lookup.
+#' @param meta `fect_meta` attribute of a fit from [get_fect()].
+#' @param unit_keys,time_keys Cell keys (coerced to character / integer).
+#' @return Numeric vector, one SE per cell.
+#' @export
+fect_cell_se0 = function(meta, unit_keys, time_keys) {
+  se_const = max(sqrt(meta$sigma2), 1e-6)
+  n_cells = length(unit_keys)
+  if (is.null(meta$analytic_se_tbl)) return(rep(se_const, n_cells))
+  se_tbl    = meta$analytic_se_tbl
+  unit_keys = as.character(unit_keys)
+  time_keys = as.integer(time_keys)
+  row_key   = paste(unit_keys, time_keys, sep = "\x01")
+  tbl_key   = paste(se_tbl$unit_id, se_tbl$time_id, sep = "\x01")
+  idx       = match(row_key, tbl_key)
+  se_matched = se_tbl$se_analytic[idx]
+  dplyr::if_else(is.finite(se_matched), se_matched, se_const)
+}
+
+#' Classify a fit's `inverse_fn` as "square", "identity", or "other"
+#'
+#' The probe [get_simeffects_fect()] uses to decide whether the closed-form
+#' `square_moments` back-transform applies.
+#' @export
+fect_inverse_kind = function(inverse_fn) {
+  tv = suppressWarnings(inverse_fn(c(0, 2, -2, 3)))
+  if (isTRUE(all.equal(tv, c(0, 4, 4, 9)))) return("square")
+  if (isTRUE(all.equal(tv, c(0, 2, -2, 3)))) return("identity")
+  "other"
+}
+
+#' Native-scale mean of a model-scale Normal prediction (`square_moments`)
+#'
+#' For `X ~ N(mu, s)` on the model scale and `Y = inverse_fn(X)`:
+#' square inverse -> `E[Y] = mu^2 + s^2`; identity -> `E[Y] = mu`. This is THE
+#' back-transform the served ATT cells use ([get_simeffects_fect()],
+#' `backtransform = "square_moments"`); any other native-scale consumer of
+#' `yhat0` must call this rather than re-deriving it.
+#' @param mu,s Model-scale mean and SE (vectorised).
+#' @param is_square `TRUE` for a sqrt outcome (square inverse), `FALSE` for identity.
+#' @export
+fect_bt_mean_native = function(mu, s, is_square = TRUE) {
+  if (is_square) mu^2 + s^2 else mu
 }
 
 #' Row-level effects compatible with [get_att_fect()] (phase 1: analytic SE proxy)
@@ -1212,7 +1252,7 @@ get_simeffects_fect = function(
     # X ~ N(mu, s);  Y = inverse_fn(X).
     #   identity:  E[Y] = mu,            SD[Y] = s
     #   square:    E[Y] = mu^2 + s^2,    SD[Y] = s * sqrt(2 s^2 + 4 mu^2)
-    bt_mean = function(mu, s) if (is_square) mu^2 + s^2 else mu
+    bt_mean = function(mu, s) fect_bt_mean_native(mu, s, is_square = is_square)
     bt_sd   = function(mu, s) if (is_square) s * sqrt(2 * s^2 + 4 * mu^2) else s
     return(
       base |>
