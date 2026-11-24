@@ -59,8 +59,9 @@
 #    the ROLLBACK path (CPPORTAL_ATT_POOL=d2c), not the published estimand.
 # 2. LONDON'S MONITOR SET — OPEN. London's Table 1 unit is the CCZ cordon set
 #    (zone_id 16, results/schema.R :: PAPER_EFFECTS_LONDON_CCZ_MONITORS).
-#    paper_values.json records only the LABEL "ccz_cordon_zone16", so the 16
-#    ids are carried in this file with provenance. FIX: make_extract.R should
+#    paper_values.json records only the LABEL "ccz_cordon_zone16"; since
+#    2026-09-30 the 16 ids come from the mirrored cross_city_att.R
+#    (`cpportal_london_monitor_set("ccz")`), not a copy here. FIX: make_extract.R should
 #    write `london_ccz_monitors.csv` into the deposit so a public replicator
 #    gets the membership as DATA rather than as a constant in a script.
 # 3. WINDOWED / PER-ERA T4 ROWS — OPEN. Every `t4.*.y*` year-horizon row comes
@@ -151,7 +152,8 @@ if (!file.exists(CCA)) {
        "checkout must carry it.", call. = FALSE)
 }
 suppressWarnings(source(CCA))
-for (fn in c("cpportal_charged_days_filter", "cpportal_episode_days_filter")) {
+for (fn in c("cpportal_charged_days_filter", "cpportal_episode_days_filter",
+            "cpportal_pool_att", "cpportal_london_monitor_set")) {
   if (!exists(fn, mode = "function")) {
     stop("sourcing ", CCA, " did not define ", fn,
          "() — the mirror is stale or partial.", call. = FALSE)
@@ -161,40 +163,34 @@ say("sourced ", CCA, " — charged-days + episode filters are the serving ones")
 
 # London's Table 1 unit is a DECLARED MONITOR SET (results/schema.R ::
 # PAPER_EFFECTS_LONDON_CCZ_MONITORS), not the whole metro: the CCZ cordon
-# monitors, zone_id 16. paper_values.json records the LABEL
-# ("ccz_cordon_zone16"), not the membership, so the list is carried here with
-# its provenance until make_extract.R ships it as a file (see GAPS).
-LONDON_CCZ_MONITORS <- c(
-  "ERG-BL0", "ERG-CE2", "ERG-CE3", "ERG-CT2", "ERG-CT3", "ERG-MR8", "ERG-MY7",
-  "ERG-SK6", "ERG-SK8", "ERG-VS1", "ERG-WM0", "ERG-WM5", "ERG-WM6",
-  "GBR_GB0566A", "GBR_GB0682A", "GBR_GB0743A"
-)
+# monitors, zone_id 16. Since the pooling unification (2026-09-30) the mirrored
+# cross_city_att.R carries it as `cpportal_london_monitor_set("ccz")` -- the
+# same set every API pool uses by default -- so this script no longer keeps a
+# literal copy of its own.
+LONDON_CCZ_MONITORS <- cpportal_london_monitor_set("ccz")
+if (length(LONDON_CCZ_MONITORS) != 16L) {
+  stop("cpportal_london_monitor_set('ccz') returned ", length(LONDON_CCZ_MONITORS),
+       " ids; the paper's CCZ set has 16. The mirror is stale.", call. = FALSE)
+}
 
 # -----------------------------------------------------------------------------
-# 5. THE POOL — Tim's ruled estimator, 2026-08-14
+# 5. THE POOL -- Tim's ruled estimator, 2026-08-14, called, never transcribed
 # -----------------------------------------------------------------------------
 #   w_it = 1 / se_it^2 ;  att = sum(w a) / sum(w) ;  se = sqrt(1 / sum(w))
-# and the counterfactual pooled under the SAME weights so `pct` is
-# 100 * sum(w a) / sum(w yhat0). This is `t1_flat_ivw_pool()` in
-# results/table1_grid.R, transcribed with its provenance because that file is
-# not mirrorable (it reads a pin). It is four lines of arithmetic and it is
-# asserted against the published cell below — if it ever diverges, the report
-# says so rather than the code quietly winning.
+# with the counterfactual pooled under the SAME weights. Until 2026-09-30 this
+# script carried a four-line copy of `t1_flat_ivw_pool()`. The pooling
+# unification made ONE function, `cpportal_pool_att()` in the mirrored
+# cross_city_att.R, the pool behind every paper number and every API number,
+# so a replicator now runs exactly the code the paper ran. `mode = "ivw_flat"`
+# is what the paper passes (the d2c rollback is never a published estimand).
+# The charged-day and episode cuts also run inside it; `cell_rows()` applies
+# them first as well, which is an exact no-op the second time.
 flat_ivw <- function(rows) {
   if (is.null(rows) || !nrow(rows)) return(NULL)
-  a <- suppressWarnings(as.numeric(rows$att))
-  s <- suppressWarnings(as.numeric(rows$se_att))
-  y <- suppressWarnings(as.numeric(rows$yhat0))
-  ok <- is.finite(a) & is.finite(s) & s > 0
-  if (!any(ok)) return(NULL)
-  a <- a[ok]; s <- s[ok]; y <- y[ok]
-  w <- 1 / (s * s); sw <- sum(w)
-  fy <- is.finite(y)
-  yb <- if (any(fy)) sum(w[fy] * y[fy]) / sum(w[fy]) else NA_real_
-  ids <- if ("fullaqsid" %in% names(rows)) as.character(rows$fullaqsid)[ok] else character(0)
-  ids <- ids[nzchar(ids)]
-  list(att = sum(w * a) / sw, se = sqrt(1 / sw), n = length(a),
-       k = if (length(ids)) length(unique(ids)) else 1L, yhat0 = yb)
+  p <- cpportal_pool_att(rows, basis = "fitted", mode = "ivw_flat")
+  if (!nrow(p) || !is.finite(p$att[1L])) return(NULL)
+  list(att = p$att[1L], se = p$se_att[1L], n = as.integer(p$n_days[1L]),
+       k = as.integer(p$n_monitors[1L]), yhat0 = p$yhat0[1L])
 }
 
 cell_rows <- function(mid, day_start, day_end, monitor_set = NULL) {

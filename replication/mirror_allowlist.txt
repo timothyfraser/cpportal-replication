@@ -37,6 +37,18 @@ job/model/fect/train/gap_shape.R
 # sourcing the file opens nothing.
 app/v2/api/R/cross_city_att.R
 
+# --- the charge calendar: the ONE charged-day resolver and its data ----------
+# Added 2026-09-30 (pooling unification; audit section 6). Since PR #744 both
+# `cpportal_charged_days_filter()` (cross_city_att.R:~108) and the train flip
+# (train/functions.R:~4623) source this resolver, which reads the CSV; the .bib
+# is the citation for every CSV row. Without these three files a mirror
+# checkout stops at "charge_calendar.R not found" and cannot run at all.
+# Audited 2026-09-30: pure R + static data; the only Sys.getenv reads are the
+# CPPORTAL_CHARGE_CALENDAR_PATH override and a CPPORTAL_* knob, by name.
+app/v2/api/R/charge_calendar.R
+app/v2/api/data/charge_calendar.csv
+app/v2/api/data/charge_calendar.bib
+
 # --- replication-only files (single source of truth lives here too) ---------
 replication/README.md
 replication/panel_contract.md

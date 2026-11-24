@@ -3127,6 +3127,28 @@ train_fect_bundle = function(db, spec) {
   panel = d_unch$panel
   spec  = d_unch$spec
 
+  # Model B (Tim, 2026-11-24): low-emission zones enter as ONE 0/1 X covariate
+  # `lez` (any zone versus none), not as treatment. Kill switch:
+  # CPPORTAL_FECT_LEZ_CONTROL=0. Missing or malformed pairs file = hard error.
+  lez_res  = fect_add_lez(panel, spec)
+  lez_info = attr(lez_res, "lez_info") %||% list(enabled = FALSE)
+  panel    = lez_res$panel
+  spec     = lez_res$spec
+  rm(lez_res)
+
+  # Stale baseline (Tim, 2026-11-24): a treated monitor whose last reading
+  # before its policy is more than 3 years older than the policy start is split
+  # into two monitors: its rows from the policy start on move to the site's
+  # second monitor id (a real row of `monitors`, already among the treated
+  # pairs), which has no baseline. Runs after every step that matches rows by
+  # id. Kill switch: CPPORTAL_FECT_STALE_BASELINE=0.
+  stale_res  = fect_split_stale_baseline(
+    panel, spec_id = spec$id,
+    second_id_map = if (fect_stale_baseline_enabled()) fect_site_second_ids(db) else NULL)
+  stale_info = stale_res$info
+  panel      = stale_res$panel
+  rm(stale_res)
+
   panel = add_groups(panel)
 
   # Plan (b) — metro one-hot dummies as time-invariant Z covariates. Each
@@ -3818,6 +3840,17 @@ train_fect_bundle = function(db, spec) {
       treatment_scope = spec$treatment_scope %||% "zone",
       fect_method = spec$fect_method,
       system_types_csv = paste(spec$system_types, collapse = ","),
+      lez_control = isTRUE(lez_info$enabled),
+      lez_added = isTRUE(lez_info$added),
+      lez_pairs_md5 = lez_info$pairs_md5 %||% NA_character_,
+      lez_n_pairs = lez_info$n_pairs %||% NA_integer_,
+      lez_n_monitor_days_on = lez_info$n_monitor_days_on %||% NA_integer_,
+      stale_baseline_rule = isTRUE(stale_info$enabled),
+      stale_baseline_years = stale_info$years %||% NA_real_,
+      stale_baseline_monitors_csv = paste(stale_info$monitors %||% character(0), collapse = ","),
+      stale_baseline_second_ids_csv = paste(stale_info$second_ids %||% character(0), collapse = ","),
+      stale_baseline_rows_moved = stale_info$n_rows_moved %||% NA_integer_,
+      stale_baseline_rows_left_out = stale_info$n_rows_left_out %||% NA_integer_,
       control_metro_ids = sort(unique(as.integer(spec$metro_ids))),
       n_metros = dplyr::n_distinct(panel$metro_id),
       n_monitors = dplyr::n_distinct(panel$fullaqsid),
@@ -4596,19 +4629,35 @@ fect_m9_freeze_month = function(metro_id, arm = FECT_M9_TF_ARM_DEFAULT,
 # Excluded weekdays are ISO %u codes (1=Mon ... 6=Sat, 7=Sun). NYC (metro_id
 # 1) charges 24/7 and is deliberately ABSENT from this map -- absence means
 # "exclude nothing," not "unregistered."
-FECT_CHARGED_DAYS_EXCLUDED_WDAYS = list(
-  `943` = c(6L, 7L),  # London CCZ/ULEZ      -- weekends not charged
-  `949` = c(6L, 7L),  # Stockholm congestion tax -- weekends not charged
-  `950` = c(6L, 7L),  # Milan Area C/Ecopass  -- weekends not charged
-  `955` = 7L,         # Singapore ERP         -- Sundays not charged
-  # Added Tim 2026-08-09, task #42. Gothenburg's trangselskatt is the SAME
-  # statute family as Stockholm's (Lag 2004:629 om trangselskatt), extended to
-  # Goteborg on 2013-01-01: charged Mon-Fri only, never Sat/Sun. Weekday grain
-  # only -- the sub-daily hours, the public-holiday / day-before-holiday
-  # exemption and the July exemption (which apply to 949 AND 957 alike) are
-  # follow-ups for task #42; the mechanism is weekday-only today.
-  `957` = c(6L, 7L)   # Gothenburg congestion tax -- weekends not charged
-)
+# 2026-09-30: the weekday map, the 7/7 system types and the date-dependent
+# charge calendar all live in ONE shared file, app/v2/api/R/charge_calendar.R
+# (vendored to _bundled/charge_calendar.R), read by this train code, the API's
+# cpportal_charged_days_filter() and BREATHE. These aliases keep the historical
+# names; edit the values THERE, never here. Bergen (958) left the weekday map on
+# 2026-09-30: its weekend exemption was an unsourced assumption, and the
+# sourced part (weekends 1986-01-02..2004-02-01) is a calendar row.
+fect_source_charge_calendar = function() {
+  if (exists("charge_calendar_status", mode = "function")) return(invisible(TRUE))
+  candidates = c(
+    "_bundled/charge_calendar.R",                       # Connect: cwd = train/
+    "app/v2/api/R/charge_calendar.R",                   # local: cwd = repo root
+    "job/model/fect/train/_bundled/charge_calendar.R",  # local: vendored copy
+    "../../../../app/v2/api/R/charge_calendar.R"        # cwd = train/
+  )
+  for (p in candidates) {
+    if (file.exists(p)) {
+      source(p, local = FALSE)
+      return(invisible(TRUE))
+    }
+  }
+  # HARD ERROR: without the resolver every uncharged day would silently read
+  # as charged, which changes the estimand.
+  stop("[fect.train.charged] charge_calendar.R not found (looked in: ",
+       paste(candidates, collapse = " | "), ")")
+}
+fect_source_charge_calendar()
+
+FECT_CHARGED_DAYS_EXCLUDED_WDAYS = CHARGE_CALENDAR_WEEKDAY_EXCLUDED
 
 # -----------------------------------------------------------------------------
 # EITHER/OR CHARGED DAYS (Tim ruling 2026-08-09) -- a metro can host MORE THAN
@@ -4624,13 +4673,7 @@ FECT_CHARGED_DAYS_EXCLUDED_WDAYS = list(
 #
 #   treated(monitor, day) = 1  iff  at least ONE scheme whose zone covers the
 #   monitor has an active period covering the day AND that scheme charges on
-#   that weekday.
-#
-# The pre-2026-08-09 implementation applied ONE weekday map PER METRO
-# (FECT_CHARGED_DAYS_EXCLUDED_WDAYS above). That is wrong for London: the CCZ
-# charges Mon-Fri, but the ULEZ charges 7/7, so from 2019-04-08 a London
-# monitor inside a ULEZ zone is charged on Saturday and Sunday. The per-metro
-# map marked those days uncharged -- an AND/BOTH reading Tim has now overruled.
+#   that day.
 #
 # GEOMETRY, VERIFIED AT SOURCE 2026-08-09 (public.monitors x public.zones,
 # ST_Intersects, metro 943). Monitors inside the current CCZ core zone
@@ -4642,51 +4685,42 @@ FECT_CHARGED_DAYS_EXCLUDED_WDAYS = list(
 #   LON-ULEZ-2021-INNER   (28)        34     147           34                0
 #   LON-ULEZ-2023-WIDE    (44)        34     262           34                0
 #
-# So it is NOT a clean date cutover (CASE (b), not CASE (a)): during
-# 2019-04-08..2021-10-24 five CCZ monitors sit OUTSIDE the central ULEZ zone
-# and remain Mon-Fri-only. Genuine PER-PAIR logic is therefore required
-# wherever monitor identity is available (the train side, which holds
-# `zone_pairs`). Only three of those five carry any weekend panel rows in that
-# window (ERG-MR8 123, ERG-MY7 234, ERG-SK8 128 = 485 monitor-days), which is
-# what bounds the metro-grain approximation used by the serving layer below.
+# So during 2019-04-08..2021-10-24 five CCZ monitors sit OUTSIDE the central
+# ULEZ zone. Per-pair logic is used wherever monitor identity is available (the
+# train side, which holds `zone_pairs`); the metro grain (serving) accepts a
+# 485-monitor-day residual on three monitors (ERG-MR8, ERG-MY7, ERG-SK8).
 #
-# HOW A PAIR GETS ITS SCHEDULE (resolution order):
+# HOW A PAIR-DAY IS RESOLVED (2026-09-30, charge calendar):
+#   charged(pair, day) = coalesce(charge_calendar_status(metro, policy_uid, day),
+#                                 weekday rule of the pair)
+# where the weekday rule is
 #   1. policy_uid override in FECT_CHARGED_DAYS_SCHEME_EXCLUDED_WDAYS, else
 #   2. system_type in FECT_CHARGED_DAYS_7_7_SYSTEM_TYPES -> charges every day,
 #      else
-#   3. the metro segment that contains the pair's WHOLE policy window, if
-#      exactly one does (FECT_CHARGED_DAYS_METRO_SEGMENTS), else
-#   4. the metro's cordon weekday map (FECT_CHARGED_DAYS_EXCLUDED_WDAYS).
-#
-# Step 3 exists for Bergen (958), whose two cordon eras run on different
-# schedules but share one system_type and carry no policy_uid override -- the
-# pair's own window is the only thing that separates them. It is a no-op
-# everywhere else: London's CCZ periods straddle 2019-04-08 and fall through to
-# step 4 unchanged, its ULEZ periods never reach step 3, and 949/950/955/957
-# have a single open segment whose `excluded` equals their metro-map entry.
-#
-# Hours-of-day and public-holiday exemptions remain OUT OF SCOPE (task #42);
-# the mechanism is weekday grain only.
+#   3. the metro's weekday map (FECT_CHARGED_DAYS_EXCLUDED_WDAYS).
+# A calendar row can move a day EITHER way: `charged` beats the weekday map
+# (London CCZ weekends from 2020-06-22), `uncharged` beats it the other way
+# (Swedish July, 2020 suspensions). Only conclusive rows make a day uncharged
+# (Tim 2026-09-30: uncertain => charged). Hours-of-day remain out of scope.
 
 #' Per-policy weekday overrides, keyed by `congestion_pricing_periods.policy_uid`.
 #' Empty by default: a policy absent from this map resolves by system_type and
 #' then by its metro's map. Add an entry only when one scheme inside a metro
-#' departs from that metro's cordon schedule in a way system_type cannot express.
+#' departs from that metro's cordon schedule in a way neither system_type nor a
+#' charge-calendar row can express.
 FECT_CHARGED_DAYS_SCHEME_EXCLUDED_WDAYS = list()
 
-#' `system_type` values that charge SEVEN DAYS A WEEK. London's ULEZ operates
-#' 24 hours a day, every day of the year except Christmas Day; at weekday grain
-#' that is "exclude nothing". All three LON-ULEZ-* periods carry system_type
-#' 'ULEZ', so this one entry covers them without hard-coding policy ids.
-FECT_CHARGED_DAYS_7_7_SYSTEM_TYPES = c("ULEZ")
+#' `system_type` values that charge SEVEN DAYS A WEEK (see charge_calendar.R).
+FECT_CHARGED_DAYS_7_7_SYSTEM_TYPES = CHARGE_CALENDAR_7_7_SYSTEM_TYPES
 
-#' Excluded ISO weekdays for ONE (zone, period) pair.
+#' Weekday-rule excluded ISO weekdays for ONE (zone, period) pair -- the
+#' fallback used where no charge-calendar row speaks about a day.
 #'
 #' @param metro_id Metro id of the pair.
 #' @param system_type `congestion_pricing_periods.system_type` (may be NA).
 #' @param policy_uid `congestion_pricing_periods.policy_uid` (may be NA).
-#' @param start_date,end_date The pair's own policy window (may be NA; an NA
-#'   end means "open"). Used only by step 3 of the resolution order.
+#' @param start_date,end_date Ignored since 2026-09-30 (the Bergen window
+#'   segment they served is gone); kept so existing callers do not break.
 #' @return Integer vector of ISO weekdays (1=Mon..7=Sun) the pair does NOT
 #'   charge; `integer(0)` means "charges every day".
 fect_charged_days_pair_excluded_wdays = function(metro_id,
@@ -4701,103 +4735,20 @@ fect_charged_days_pair_excluded_wdays = function(metro_id,
   }
   st = as.character(system_type)[1]
   if (!is.na(st) && st %in% FECT_CHARGED_DAYS_7_7_SYSTEM_TYPES) return(integer(0))
-  seg = fect_charged_days_segment_excluded_wdays(metro_id, start_date, end_date)
-  if (!is.null(seg)) return(seg)
   fect_charged_days_excluded_wdays(metro_id)
 }
 
-#' The metro segment covering a pair's WHOLE policy window, if exactly one does.
-#'
-#' @return Integer vector of excluded ISO weekdays, or NULL meaning "no opinion,
-#'   fall through to the date-blind metro map". NULL whenever the metro has no
-#'   segments, the window start is unknown, or the window straddles a boundary
-#'   -- London's CCZ periods run across 2019-04-08 and must keep resolving
-#'   Mon-Fri from the metro map, not from whichever segment they touch first.
-fect_charged_days_segment_excluded_wdays = function(metro_id, start_date,
-                                                    end_date) {
-  mid = suppressWarnings(as.integer(metro_id))[1]
-  if (!is.finite(mid)) return(NULL)
-  segs = FECT_CHARGED_DAYS_METRO_SEGMENTS[[as.character(mid)]]
-  if (is.null(segs) || !length(segs)) return(NULL)
-  s = suppressWarnings(as.Date(start_date))[1]
-  if (is.na(s)) return(NULL)
-  e = suppressWarnings(as.Date(end_date))[1]
-  if (is.na(e)) e = as.Date("9999-12-31")
-  hit = Filter(function(g) s >= g$from && e <= g$to, segs)
-  if (length(hit) != 1L) return(NULL)
-  as.integer(hit[[1]]$excluded)
-}
-
-#' METRO-GRAIN, DATE-AWARE schedule -- the either/or rule collapsed to the
-#' coarsest grain that still respects it, for callers that see only
-#' (metro_id, day) and cannot resolve which monitor sits in which zone.
-#'
-#' A segment says: over [from, to], the metro does not charge on `excluded`.
-#' Segments are the OR of the metro's schemes: a weekday is excluded only if
-#' NO scheme active in that window charges it. London therefore splits at
-#' 2019-04-08, the day the first ULEZ period opened.
-#'
-#' APPROXIMATION, STATED LOUDLY: for metro 943 in 2019-04-08..2021-10-24 this
-#' treats every London monitor as ULEZ-covered, but five CCZ monitors sat
-#' outside the central ULEZ zone (see the table above). Three of them carry
-#' weekend panel rows, 485 monitor-days in total, which this metro-grain form
-#' counts as charged when they were not. That residual is accepted at the
-#' serving/pooling grain and is ZERO on the train side, which uses per-pair
-#' logic. Revisit if the pooling layer ever gains zone membership.
-FECT_CHARGED_DAYS_METRO_SEGMENTS = list(
-  `943` = list(
-    # CCZ only -- Mon-Fri.
-    list(from = as.Date("1900-01-01"), to = as.Date("2019-04-07"),
-         excluded = c(6L, 7L)),
-    # ULEZ live (central -> inner -> London-wide) -- 7/7 somewhere in the metro.
-    list(from = as.Date("2019-04-08"), to = as.Date("9999-12-31"),
-         excluded = integer(0))
-  ),
-  `949` = list(list(from = as.Date("1900-01-01"), to = as.Date("9999-12-31"),
-                    excluded = c(6L, 7L))),
-  `950` = list(list(from = as.Date("1900-01-01"), to = as.Date("9999-12-31"),
-                    excluded = c(6L, 7L))),
-  `955` = list(list(from = as.Date("1900-01-01"), to = as.Date("9999-12-31"),
-                    excluded = 7L)),
-  `957` = list(list(from = as.Date("1900-01-01"), to = as.Date("9999-12-31"),
-                    excluded = c(6L, 7L))),
-  `958` = list(
-    # Bergen sentrum ring (period 65, zone 34) -- Mon-Fri only.
-    list(from = as.Date("1900-01-01"), to = as.Date("2018-12-31"),
-         excluded = c(6L, 7L)),
-    # Bomringen full system (period 66, zone 35) -- AutoPASS-era 24/7 charging.
-    # ASSUMPTION: no repo doc pins the weekday-only -> 7/7 cutover, so the
-    # boundary is period 66's start; ADR-0029 lists Bergen's exact 2019
-    # in-service date as an open provenance item.
-    list(from = as.Date("2019-01-01"), to = as.Date("9999-12-31"),
-         excluded = integer(0))
-  )
-)
-
-#' Vectorised metro-grain "this day is NOT charged" predicate.
+#' Vectorised metro-grain "this day is NOT charged" predicate -- the either/or
+#' rule collapsed to (metro_id, day): uncharged iff every scheme of the metro
+#' in force that day is uncharged (charge calendar, then weekday map). A thin
+#' name-keeping wrapper over `charge_calendar_metro_uncharged()`; the API's
+#' `cpportal_charged_days_filter()` calls the same function.
 #'
 #' @param metro_ids,dates Parallel vectors.
-#' @return Logical vector, TRUE where the metro charges NOTHING that day.
-#'   Unregistered metros (NYC, the 24/7 Nordic tolls) are always FALSE, and a
-#'   non-finite metro id or unparseable date is always FALSE (never dropped,
-#'   never flipped) -- the same NA posture as the pre-2026-08-09 code.
+#' @return Logical vector, TRUE where the metro charges NOTHING that day. A
+#'   non-finite metro id or unparseable date is always FALSE.
 fect_charged_days_metro_uncharged = function(metro_ids, dates) {
-  mids = suppressWarnings(as.integer(metro_ids))
-  dts  = suppressWarnings(as.Date(dates))
-  wday = as.integer(format(dts, "%u"))
-  key  = as.character(mids)
-  ok   = is.finite(mids) & !is.na(wday)
-  out  = logical(length(mids))
-  for (m in intersect(unique(key[ok]), names(FECT_CHARGED_DAYS_METRO_SEGMENTS))) {
-    sel_m = ok & key == m
-    if (!any(sel_m)) next
-    for (s in FECT_CHARGED_DAYS_METRO_SEGMENTS[[m]]) {
-      ex = as.integer(s$excluded)
-      if (!length(ex)) next
-      out[sel_m & dts >= s$from & dts <= s$to & wday %in% ex] = TRUE
-    }
-  }
-  out
+  charge_calendar_metro_uncharged(metro_ids, dates)
 }
 
 #' Fetch policy metadata (system_type / policy_uid) for a set of policy ids.
@@ -4892,7 +4843,7 @@ fect_charged_days_only_filter = function(rows, date_col = "day",
   # EITHER/OR (Tim 2026-08-09): a day is charged if ANY scheme covering the
   # metro charges that weekday, so London weekends are KEPT from 2019-04-08
   # (ULEZ, 7/7) and dropped only before it (CCZ, Mon-Fri). This is the
-  # metro-grain collapse of the rule -- see FECT_CHARGED_DAYS_METRO_SEGMENTS
+  # metro-grain collapse of the rule -- see charge_calendar_metro_uncharged()
   # for the 485-monitor-day residual it accepts. Still vectorised (one pass per
   # registered metro-segment) and still NA-safe: a row with a non-finite metro
   # id or an unparseable date is never dropped.
@@ -5006,6 +4957,328 @@ fect_add_d_unch = function(panel, spec,
   list(panel = panel, spec = spec)
 }
 
+# -----------------------------------------------------------------------------
+# Stale baseline (Tim, 2026-11-24, provisional: "a monitor that has been gone
+# for, let's say, 3 years ... we'll treat them as two separate monitors ...
+# Let's try it out that way, and if we need to revert it, we can").
+#
+# A treated monitor whose LAST reading before its policy began is more than
+# `years` older than the policy start has no usable baseline: when it returns it
+# is a DIFFERENT monitor (Tim, 2026-11-24: "split two bridges into two different
+# monitors please"). Its rows from the policy start on are filed, in the
+# training panel, under the site's SECOND monitor id: a real row of `monitors`
+# at the same place (for a US site, its AirNow id; ADR-0059), which the
+# treated-pair fetch already returns, so every later step sees an ordinary
+# in-zone monitor. The first monitor keeps its earlier (untreated) rows and
+# informs the fit exactly as before; the second has no reading before the
+# policy, so, like any monitor that began after its policy, it has no baseline
+# and gets no fitted effect. A site with no second id cannot be split: its
+# returned period is left out instead. Nothing is estimated here and no other
+# monitor's cells change: the fit's coefficients, unit and time effects come
+# from untreated cells only, and the rows that move are treated cells. The
+# daily panel in the database is not changed: it still files the site under
+# one id.
+#
+# Measured 2026-11-24 on model_panel_daily: across the eight treated metros
+# exactly one monitor qualifies at 2 or 3 years, New York site 360610134 (last
+# reading before the toll 2020-03-09, toll 2025-01-05, back 2025-01-29, and a
+# different instrument). With it the New York zone pool on the repaired data is
+# +0.41; without it -0.89 (job/model/fect/local_arms/out/).
+#
+# Monitors with NO reading before their policy (fitted from non-charging days,
+# or simply new) are not touched. Kill switch: CPPORTAL_FECT_STALE_BASELINE=0.
+# Cut-off: CPPORTAL_FECT_STALE_BASELINE_YEARS (default 3).
+# -----------------------------------------------------------------------------
+
+#' Is the stale-baseline rule on? DEFAULT ON.
+fect_stale_baseline_enabled = function() {
+  v = tolower(trimws(Sys.getenv("CPPORTAL_FECT_STALE_BASELINE", "")))
+  if (!nzchar(v)) return(TRUE)
+  !(v %in% c("0", "false", "f", "no", "n", "off"))
+}
+
+#' Cut-off in years. A value that is not a positive number is a hard error.
+fect_stale_baseline_years = function() {
+  raw = trimws(Sys.getenv("CPPORTAL_FECT_STALE_BASELINE_YEARS", ""))
+  if (!nzchar(raw)) return(3)
+  v = suppressWarnings(as.numeric(raw))
+  if (!is.finite(v) || v <= 0) {
+    stop("[fect.train.stale_baseline] CPPORTAL_FECT_STALE_BASELINE_YEARS must be a positive number, got '",
+         raw, "'", call. = FALSE)
+  }
+  v
+}
+
+#' The second monitor id of each site that has one (read-only).
+#'
+#' A site can exist as two rows of `monitors`: the id the daily panel files it
+#' under and a twin (ADR-0059). Returns a named character vector, names = the
+#' panel's id, values = the twin's id; NULL if the view cannot be read (the
+#' caller then leaves the returned period out instead of splitting).
+fect_site_second_ids = function(db) {
+  tryCatch({
+    x = DBI::dbGetQuery(db, "
+      SELECT DISTINCT canonical_fullaqsid AS first_id, fullaqsid AS second_id
+      FROM public.monitor_site_canonical
+      WHERE feed_rank = 2")
+    if (!nrow(x)) return(NULL)
+    x = x[!duplicated(x$first_id), , drop = FALSE]
+    stats::setNames(as.character(x$second_id), as.character(x$first_id))
+  }, error = function(e) {
+    message("[fect.train.stale_baseline] could not read second ids (",
+            conditionMessage(e), "); a stale monitor's returned period will be left out")
+    NULL
+  })
+}
+
+#' Split a treated monitor with a stale baseline into two monitors.
+#'
+#' Rows from the policy start on move to the site's second monitor id
+#' (`second_id_map`, from `fect_site_second_ids()`): a real row of `monitors`, in
+#' the same place, which the treated-pair fetch already returns. A stale monitor
+#' whose site has no second id cannot be split: its rows from the policy start
+#' on are left out instead (it gets no effect either way), and the log says so.
+#' Call after `add_treatment_zones()` (needs `days_since_treatment`) and after
+#' every step that matches rows by monitor id (the uncharged-day flip, `D_unch`,
+#' `lez`). Returns `list(panel = , info = )`; with the rule off the panel is
+#' returned untouched.
+fect_split_stale_baseline = function(panel, spec_id = NA_character_,
+                                     second_id_map = NULL,
+                                     enabled = fect_stale_baseline_enabled(),
+                                     years = fect_stale_baseline_years()) {
+  info = list(enabled = isTRUE(enabled), years = years, n_monitors = 0L,
+              monitors = character(0), second_ids = character(0),
+              n_rows_moved = 0L, n_rows_left_out = 0L)
+  if (!isTRUE(enabled)) return(list(panel = panel, info = info))
+  need = c("fullaqsid", "date", "days_since_treatment")
+  miss = setdiff(need, names(panel))
+  if (length(miss)) {
+    stop("[fect.train.stale_baseline] panel lacks column(s): ",
+         paste(miss, collapse = ", "), call. = FALSE)
+  }
+  dst = as.integer(panel$days_since_treatment)
+  if (all(is.na(dst))) return(list(panel = panel, info = info))
+  id  = as.character(panel$fullaqsid)
+  day = as.integer(as.Date(panel$date))
+  pre  = !is.na(dst) & dst < 0L
+  post = !is.na(dst) & dst >= 0L
+  cand = intersect(unique(id[pre]), unique(id[post]))
+  if (!length(cand)) return(list(panel = panel, info = info))
+  # Per candidate monitor: its last day before the policy, its policy start
+  # (day - days_since_treatment, the same on every row of a monitor) and its
+  # first day on or after the start. Date bookkeeping only.
+  k_pre  = pre & id %in% cand
+  k_post = post & id %in% cand
+  last_pre   = vapply(split(day[k_pre], id[k_pre]), max, integer(1))
+  start_day  = vapply(split(day[k_post] - dst[k_post], id[k_post]), min, integer(1))
+  first_post = vapply(split(day[k_post], id[k_post]), min, integer(1))
+  cand = intersect(names(last_pre), names(start_day))
+  gap_days = start_day[cand] - last_pre[cand]
+  stale = cand[gap_days > years * 365.25]
+  if (!length(stale)) {
+    message("[fect.train.stale_baseline] spec=", spec_id, " years=", years,
+            " no treated monitor has a baseline older than the cut-off")
+    return(list(panel = panel, info = info))
+  }
+  stale = sort(stale)
+  second = if (is.null(second_id_map)) rep(NA_character_, length(stale)) else
+    unname(as.character(second_id_map[stale]))
+  # A second id that already has rows in the panel cannot take more: leave out.
+  second[!is.na(second) & second %in% id] = NA_character_
+  names(second) = stale
+  new_id = id
+  drop = rep(FALSE, length(id))
+  for (s in stale) {
+    rows = post & id == s
+    if (!is.na(second[[s]])) new_id[rows] = second[[s]] else drop = drop | rows
+    message("[fect.train.stale_baseline] spec=", spec_id, " monitor=", s,
+            " last_before_policy=", as.Date(last_pre[[s]], origin = "1970-01-01"),
+            " policy_start=", as.Date(start_day[[s]], origin = "1970-01-01"),
+            " first_after=", as.Date(first_post[[s]], origin = "1970-01-01"),
+            " gap_days=", gap_days[[s]],
+            if (!is.na(second[[s]])) paste0(" second_monitor=", second[[s]], " rows_moved=", sum(rows))
+            else paste0(" second_monitor=none (site has no second id) rows_left_out=", sum(rows)))
+  }
+  n_moved = sum(post & id %in% stale[!is.na(second)])
+  message("[fect.train.stale_baseline] spec=", spec_id, " years=", years,
+          " monitors=", length(stale), " split=", sum(!is.na(second)),
+          " rows_moved=", n_moved, " rows_left_out=", sum(drop),
+          " (the first monitor keeps its earlier rows; the returned period has no baseline)")
+  panel$fullaqsid = if (is.factor(panel$fullaqsid)) factor(new_id) else new_id
+  info$n_monitors = length(stale)
+  info$monitors = stale
+  info$second_ids = unname(second)
+  info$n_rows_moved = as.integer(n_moved)
+  info$n_rows_left_out = as.integer(sum(drop))
+  list(panel = if (any(drop)) panel[!drop, , drop = FALSE] else panel, info = info)
+}
+
+# -----------------------------------------------------------------------------
+# Model B (Tim, 2026-11-24): low-emission zones are a CONTROL, not a treatment.
+# A 0/1 X covariate `lez` = 1 on a monitor-day inside any low-emission zone's
+# span (overlapping zones count once: "affected by any low-emission zone versus
+# none"), else 0. Pairs come from job/model/lez/lez_pairs.csv (built by
+# job/model/lez/build_lez_pairs.R; vendored to _bundled/lez_pairs.csv).
+# Nothing is estimated here: a column and a covariate name are added.
+# Kill switch: CPPORTAL_FECT_LEZ_CONTROL=0 (with CPPORTAL_FECT_SYSTEM_TYPES=
+# cordon,ULEZ this restores Model A exactly).
+# -----------------------------------------------------------------------------
+
+#' Is the `lez` X-covariate on? DEFAULT ON.
+fect_lez_control_enabled = function() {
+  v = tolower(trimws(Sys.getenv("CPPORTAL_FECT_LEZ_CONTROL", "")))
+  if (!nzchar(v)) return(TRUE)
+  !(v %in% c("0", "false", "f", "no", "n", "off"))
+}
+
+#' Path to the LEZ pairs file: CPPORTAL_FECT_LEZ_PAIRS if set, else the first
+#' shipped copy found (Connect: cwd = train/, bundle ships _bundled/; AWS Batch:
+#' cwd = /opt/cpportal/job/model/fect/train with the whole job/ tree; local:
+#' cwd = repo root). Returns the env value even if it does not exist so the
+#' reader's hard error names it; NA when nothing is found.
+fect_lez_pairs_path = function() {
+  env = trimws(Sys.getenv("CPPORTAL_FECT_LEZ_PAIRS", ""))
+  if (nzchar(env)) return(env)
+  candidates = c(
+    "_bundled/lez_pairs.csv",                        # Connect / AWS: cwd = train/
+    "job/model/lez/lez_pairs.csv",                   # local: cwd = repo root
+    "job/model/fect/train/_bundled/lez_pairs.csv",   # local: vendored copy
+    "../../lez/lez_pairs.csv"                        # cwd = train/, full tree
+  )
+  for (p in candidates) if (file.exists(p)) return(p)
+  NA_character_
+}
+
+.fect_lez_cols = c("fullaqsid", "metro_id", "scheme_uid", "zone_file", "from",
+                   "to", "lez_class")
+
+#' Read the LEZ pairs file. HARD ERROR (naming the file) on any defect: there is
+#' no silent "no zones" fallback.
+fect_lez_read_pairs = function(path) {
+  if (!is.character(path) || length(path) != 1L || is.na(path) ||
+      !file.exists(path))
+    stop("[fect.train.lez] pairs file not found: ", path,
+         " (set CPPORTAL_FECT_LEZ_PAIRS, or CPPORTAL_FECT_LEZ_CONTROL=0)")
+  hdr = names(utils::read.csv(path, nrows = 0L, check.names = FALSE))
+  if (!identical(hdr, .fect_lez_cols))
+    stop("[fect.train.lez] pairs file ", path, " has wrong header: ",
+         paste(hdr, collapse = ","), " (want ",
+         paste(.fect_lez_cols, collapse = ","), ")")
+  p = utils::read.csv(path, colClasses = "character", na.strings = character(0),
+                      stringsAsFactors = FALSE)
+  if (!nrow(p)) stop("[fect.train.lez] pairs file is empty: ", path)
+  parse_d = function(x, col, allow_blank) {
+    blank = is.na(x) | !nzchar(trimws(x))
+    if (!allow_blank && any(blank))
+      stop("[fect.train.lez] blank `", col, "` in pairs file ", path)
+    ok = blank | grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", trimws(x))
+    d = suppressWarnings(as.Date(ifelse(blank, NA_character_, trimws(x)),
+                                 format = "%Y-%m-%d"))
+    bad = !ok | (!blank & is.na(d))
+    if (any(bad))
+      stop("[fect.train.lez] bad date in `", col, "` of pairs file ", path, ": ",
+           paste(utils::head(x[bad], 3L), collapse = ", "))
+    d
+  }
+  p$from = parse_d(p$from, "from", FALSE)
+  p$to   = parse_d(p$to, "to", TRUE)
+  if (any(!is.na(p$to) & p$to < p$from))
+    stop("[fect.train.lez] pairs file ", path, " has to < from")
+  if (any(!nzchar(p$fullaqsid)))
+    stop("[fect.train.lez] blank fullaqsid in pairs file ", path)
+  p$metro_id = suppressWarnings(as.integer(p$metro_id))
+  p
+}
+
+#' Add `lez` to the panel and to spec$covariates (X). Mirrors fect_add_d_unch().
+#'
+#' Switch off: returns its inputs untouched. Switch on: reads the pairs (unless
+#' `pairs` is given), marks lez = 1L inside any pair span of the monitor
+#' (inclusive dates, empty `to` = open), else 0L. All-zero: column dropped, spec
+#' unchanged, SKIP logged. Returns `list(panel=, spec=)`; the provenance (path,
+#' md5, pair count, per-metro counts, added) rides on attr(, "lez_info").
+fect_add_lez = function(panel, spec, pairs = NULL,
+                        id_col = "fullaqsid", date_col = "date",
+                        metro_col = "metro_id") {
+  if (!fect_lez_control_enabled()) {
+    message("[fect.train.lez] DISABLED via CPPORTAL_FECT_LEZ_CONTROL")
+    return(list(panel = panel, spec = spec))
+  }
+  path = NA_character_
+  md5 = NA_character_
+  if (is.null(pairs)) {
+    path = fect_lez_pairs_path()
+    pairs = fect_lez_read_pairs(path)
+    md5 = unname(tools::md5sum(path))
+  }
+  message("[fect.train.lez] pairs file=", path, " n_pairs=", nrow(pairs),
+          " md5=", md5)
+  empty_n = data.frame(metro_id = integer(0), n_monitor_days_on = integer(0),
+                       n_monitors_on = integer(0))
+  info = list(enabled = TRUE, pairs_path = path, pairs_md5 = md5,
+              n_pairs = nrow(pairs), n_on = empty_n, n_monitor_days_on = 0L,
+              added = FALSE)
+  finish = function(out) { attr(out, "lez_info") = info; out }
+  if (is.null(panel) || !nrow(panel))
+    return(finish(list(panel = panel, spec = spec)))
+  miss = setdiff(c(id_col, date_col, metro_col), names(panel))
+  if (length(miss))
+    stop("[fect.train.lez] panel lacks column(s): ", paste(miss, collapse = ", "))
+
+  ids = as.character(panel[[id_col]])
+  dts = as.numeric(as.Date(panel[[date_col]]))
+  on = integer(nrow(panel))
+  idx = which(ids %in% pairs$fullaqsid)
+  if (length(idx)) {
+    rows_by_mon = split(idx, ids[idx])
+    pf = as.numeric(pairs$from)
+    pt = ifelse(is.na(pairs$to), Inf, as.numeric(pairs$to))
+    for (i in seq_len(nrow(pairs))) {
+      r = rows_by_mon[[pairs$fullaqsid[i]]]
+      if (is.null(r)) next
+      d = dts[r]
+      on[r[!is.na(d) & d >= pf[i] & d <= pt[i]]] = 1L
+    }
+  }
+
+  mid = panel[[metro_col]]
+  if (any(on == 1L)) {
+    k = on == 1L
+    n_on = do.call(rbind, lapply(sort(unique(mid[k])), function(m) {
+      s = k & mid %in% m
+      data.frame(metro_id = suppressWarnings(as.integer(m)),
+                 n_monitor_days_on = sum(s),
+                 n_monitors_on = length(unique(ids[s])))
+    }))
+  } else {
+    n_on = empty_n
+  }
+  for (i in seq_len(nrow(n_on)))
+    message("[fect.train.lez] metro=", n_on$metro_id[i],
+            " n_monitor_days_on=", n_on$n_monitor_days_on[i],
+            " n_monitors_on=", n_on$n_monitors_on[i])
+  info$n_on = n_on
+  info$n_monitor_days_on = as.integer(sum(on))
+
+  if (!any(on == 1L)) {
+    panel$lez = NULL
+    message("[fect.train.lez] SKIP: lez is all 0 on ", nrow(panel),
+            " panel rows; covariate not added (constant covariate rejected)")
+    return(finish(list(panel = panel, spec = spec)))
+  }
+  panel$lez = on
+  message("[fect.train.lez] added lez to X; n_on=", sum(on), " (",
+          sprintf("%.2f", 100 * sum(on) / nrow(panel)), "% of rows)")
+
+  rhs = if (is.null(spec$covariates)) character(0) else all.vars(spec$covariates)
+  if (!("lez" %in% rhs)) {
+    rhs = c(rhs, "lez")
+    spec$covariates = stats::as.formula(paste0("~ ", paste(rhs, collapse = " + ")))
+  }
+  info$added = TRUE
+  finish(list(panel = panel, spec = spec))
+}
+
 #' Mark non-charging monitor-days as UNTREATED in a training panel.
 #'
 #' Call immediately after `add_treatment_zones()` and before the dedupe /
@@ -5070,7 +5343,7 @@ fect_untreat_uncharged_days = function(panel, spec_id = NA_character_,
   if (!pair_mode) {
     # Metro-grain fallback -- still date-aware, so London's post-2019 weekends
     # are correctly left TREATED; only the five CCZ-outside-central-ULEZ
-    # monitors are approximated (see FECT_CHARGED_DAYS_METRO_SEGMENTS).
+    # monitors are approximated (see CHARGE_CALENDAR_METRO_SCHEMES).
     message(tag, "pair schedules unavailable -- using METRO-GRAIN either/or",
             " segments (zone_pairs=", if (is.null(zone_pairs)) "NULL" else nrow(zone_pairs),
             ", policy_schedules=",
@@ -5084,7 +5357,7 @@ fect_untreat_uncharged_days = function(panel, spec_id = NA_character_,
       panel[[treated_col]][hit] = FALSE
       flip_total = flip_total + as.integer(n_hit)
       message("[fect.train.charged] metro=", m, " flipped n=", n_hit,
-              " monitor-days to untreated (metro-grain either/or segments)")
+              " monitor-days to untreated (metro-grain either/or, charge calendar)")
     }
     message(tag, "total flipped n=", flip_total,
             " of n_treated=", n_treated_before,
@@ -5119,13 +5392,11 @@ fect_untreat_uncharged_days = function(panel, spec_id = NA_character_,
     fect_charged_days_pair_excluded_wdays(
       metro_id    = pair_metro[i],
       system_type = pairs$system_type[i],
-      policy_uid  = pairs$policy_uid[i],
-      start_date  = pairs$.s[i],
-      end_date    = pairs$.e[i]
+      policy_uid  = pairs$policy_uid[i]
     )
   })
 
-  # Log the resolved schedule once per (metro, policy) so the ruling is
+  # Log the resolved weekday fallback once per (metro, policy) so the ruling is
   # auditable from the rendered job.html.
   sched_key = paste(pair_metro, pairs$policy_uid,
                     vapply(pair_excl, paste, character(1), collapse = ","),
@@ -5136,14 +5407,37 @@ fect_untreat_uncharged_days = function(panel, spec_id = NA_character_,
     message("[fect.train.charged] schedule metro=", pair_metro[i],
             " policy=", pairs$policy_uid[i],
             " system_type=", pairs$system_type[i],
-            " excluded_wdays=",
+            " weekday_fallback_excluded=",
             if (length(ex)) paste(ex, collapse = ",") else "<none, charges 7/7>",
             " n_pairs=", length(which(sched_key == k)))
   }
 
-  cand    = which(ok & is_tr)
-  charged = logical(length(cand))
-  has_pair = logical(length(cand))
+  # The charge calendar (HARD ERROR if absent -- never a silent "all charged").
+  cal = charge_calendar_load()
+  message("[fect.train.charged] charge calendar: ", attr(cal, "path"), " rows=",
+          nrow(cal), " active=", sum(cal$active))
+
+  cand       = which(ok & is_tr)
+  # Resolve the calendar ONCE per (metro, policy_uid) over the panel's date
+  # span, then index by day -- thousands of pairs share a handful of schemes.
+  cal_grid0 = if (length(cand)) min(dts[cand]) else as.Date(NA)
+  cal_grid  = if (length(cand)) seq(cal_grid0, max(dts[cand]), by = "day") else as.Date(character(0))
+  cal_memo  = new.env(parent = emptyenv())
+  cal_lookup = function(metro, puid, d) {
+    key = paste(metro, puid, sep = "|")
+    v = cal_memo[[key]]
+    if (is.null(v)) {
+      v = as.character(charge_calendar_status(metro, puid, cal_grid, cal = cal))
+      assign(key, v, envir = cal_memo)
+    }
+    v[as.integer(d - cal_grid0) + 1L]
+  }
+  charged    = logical(length(cand))   # final: calendar, else weekday rule
+  charged_wk = logical(length(cand))   # weekday rule alone (for the log)
+  has_pair   = logical(length(cand))
+  # per (metro, policy) pair-day counts where the calendar overrode the
+  # weekday rule, in each direction
+  pol_log = list()
   if (length(cand)) {
     unit_chr  = as.character(panel[[unit_col]])[cand]
     idx_by_u  = split(seq_along(cand), unit_chr)
@@ -5153,12 +5447,23 @@ fect_untreat_uncharged_days = function(panel, spec_id = NA_character_,
       has_pair[sel] = TRUE
       du = dts[cand][sel]
       wu = wday[cand][sel]
+      mu = mids[cand][sel]
       for (r in rows_by_u[[u]]) {
         inwin = !is.na(du) & du >= pairs$.s[r] & du <= pairs$.e[r]
         if (!any(inwin)) next
-        ex = pair_excl[[r]]
-        ch = inwin & !(wu %in% ex)
+        wk = inwin & !(wu %in% pair_excl[[r]])
+        st = rep(NA_character_, length(du))
+        st[inwin] = cal_lookup(pair_metro[r], pairs$policy_uid[r], du[inwin])
+        ch = inwin & ifelse(is.na(st), wk, st == "charged")
+        if (any(wk)) charged_wk[sel[wk]] = TRUE
         if (any(ch)) charged[sel[ch]] = TRUE
+        n_cal_unch = sum(inwin & wk & !ch)
+        n_cal_ch   = sum(inwin & !wk & ch)
+        if (n_cal_unch + n_cal_ch > 0L) {
+          k = paste(pair_metro[r], pairs$policy_uid[r], sep = "|")
+          prev = pol_log[[k]] %||% c(0L, 0L)
+          pol_log[[k]] = prev + c(n_cal_unch, n_cal_ch)
+        }
       }
     }
   }
@@ -5172,14 +5477,30 @@ fect_untreat_uncharged_days = function(panel, spec_id = NA_character_,
             "zone_pair (unit_col='", unit_col, "') -- left TREATED, not flipped")
   }
 
+  for (k in sort(names(pol_log))) {
+    kk = strsplit(k, "|", fixed = TRUE)[[1]]
+    message("[fect.train.charged] calendar metro=", kk[1], " policy=", kk[2],
+            " pair-days calendar->uncharged=", pol_log[[k]][1],
+            " calendar->charged=", pol_log[[k]][2])
+  }
+
   flip_idx = cand[has_pair & !charged]
   flip_total = length(flip_idx)
   if (flip_total) panel[[treated_col]][flip_idx] = FALSE
-  for (m in sort(unique(mids[flip_idx]))) {
-    n_hit = sum(mids[flip_idx] == m, na.rm = TRUE)
-    message("[fect.train.charged] metro=", m, " flipped n=", n_hit,
-            " monitor-days to untreated (per-pair either/or: no covering",
-            " scheme charges that weekday)")
+  # Per metro: weekday flips (the weekday rule alone would flip the day too),
+  # calendar flips (only the calendar makes it uncharged), and days the weekday
+  # rule would have flipped that a `charged` calendar row kept TREATED.
+  m_all = mids[cand]
+  for (m in sort(unique(m_all[has_pair]))) {
+    sm = has_pair & m_all == m
+    n_wk  = sum(sm & !charged & !charged_wk)
+    n_cal = sum(sm & !charged & charged_wk)
+    n_kep = sum(sm & charged & !charged_wk)
+    if (n_wk + n_cal + n_kep == 0L) next
+    message("[fect.train.charged] metro=", m, " flipped n=", n_wk + n_cal,
+            " monitor-days to untreated (weekday_flips=", n_wk,
+            " calendar_flips=", n_cal, "); calendar_kept_treated=", n_kep,
+            " (per-pair either/or: no covering scheme charges that day)")
   }
   message(tag, "total flipped n=", flip_total,
           " of n_treated=", n_treated_before,
